@@ -344,7 +344,7 @@ pub fn fit_hotbar(room: &HotbarRoom) -> HotbarFit {
 }
 
 /// What a player set for the phone and the hand, not for one layout: where the virtual mouse's
-/// LMB and RMB stand, the hotbar's size, and how holding Attack and Use act. A preset, the other
+/// LMB and RMB stand, the hotbar's size, how holding Attack and Use act, and the hitboxes' size. A preset, the other
 /// control system and "Default" bring layouts of their own, and upstream carries a list of such
 /// settings over each of them by hand; these are ours on that list. Without it the pair of
 /// buttons was back at its factory place after any of them.
@@ -355,6 +355,8 @@ pub struct Own {
     big_hotbar: bool,
     hold_attack: bool,
     place_one_way: bool,
+    hitbox_scale: f32,
+    hitbox_on_servers: bool,
 }
 
 impl super::layout::Settings {
@@ -365,6 +367,8 @@ impl super::layout::Settings {
             big_hotbar: self.big_hotbar,
             hold_attack: self.hold_attack,
             place_one_way: self.place_one_way,
+            hitbox_scale: self.hitbox_scale,
+            hitbox_on_servers: self.hitbox_on_servers,
         }
     }
 
@@ -374,6 +378,8 @@ impl super::layout::Settings {
         self.big_hotbar = own.big_hotbar;
         self.hold_attack = own.hold_attack;
         self.place_one_way = own.place_one_way;
+        self.hitbox_scale = own.hitbox_scale;
+        self.hitbox_on_servers = own.hitbox_on_servers;
     }
 }
 
@@ -392,6 +398,8 @@ mod tests {
             big_hotbar: false,
             hold_attack: false,
             place_one_way: false,
+            hitbox_scale: 1.5,
+            hitbox_on_servers: true,
             ..Settings::default()
         };
         let own = s.own();

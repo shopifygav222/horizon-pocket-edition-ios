@@ -12,7 +12,24 @@ pub struct Notes {
     pub fixed: &'static [&'static str],
 }
 
-const NOTES: &[Notes] = &[Notes {
+const NOTES: &[Notes] = &[
+    Notes {
+        version: "1.1.1",
+        new: &[
+            "Hitbox size (Options > Touch): an attack that just misses still hits.",
+            "It is off until you raise it. On servers it has its own switch and warning.",
+            "All of 1.1.0 too: the newer engine, hold to attack, mods built into the app.",
+        ],
+        fixed: &[
+            "The title screen says when your mods build is downloading and when it is ready.",
+            "A mod that can't be built into the app is said so before a build starts.",
+            "A build that found no free machine is started again by itself.",
+        ],
+    },
+    NOTES_1_1_0,
+];
+
+const NOTES_1_1_0: Notes = Notes {
     version: "1.1.0",
     new: &[
         "The game engine is over 31,000 changes newer (Starling 0.8 to 0.9).",
@@ -28,7 +45,7 @@ const NOTES: &[Notes] = &[Notes {
         "The catalog lists far more mods.",
         "The game no longer crashes at a grindstone.",
     ],
-}];
+};
 
 /// The notes of `version`, if it has any.
 pub fn notes(version: &str) -> Option<&'static Notes> {
@@ -53,6 +70,8 @@ mod tests {
         assert!(due("1.1.0", Some("1.1.0\n")).is_none(), "seen");
         assert!(due("1.0.0", None).is_none(), "a version without notes");
         assert!(due("", None).is_none());
+        // Each release has its own: an app of 1.1.0 that updates reads 1.1.1's.
+        assert_eq!(due("1.1.1", Some("1.1.0")).map(|n| n.version), Some("1.1.1"));
     }
 
     #[test]

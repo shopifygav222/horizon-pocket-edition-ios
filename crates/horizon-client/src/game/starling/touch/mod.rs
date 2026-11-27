@@ -1482,7 +1482,8 @@ impl Game<'_> {
                         self.touch.tapped = Some((now + USE_PULSE * 2, p));
                     }
                     // A mob under the finger is hit, as Bedrock's tap; the rest is used.
-                    if self.touch_taps() && self.pick_entity_hit().is_some() {
+                    // (Horizon PE: with "Hitbox size", a mob the finger just misses too.)
+                    if self.touch_taps() && self.attack_finds_entity() {
                         self.pad.touch_trigger(1, 1.0);
                         self.touch.attack_until = Some(now + USE_PULSE);
                     } else {
