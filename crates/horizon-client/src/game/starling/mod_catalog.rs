@@ -1887,6 +1887,11 @@ impl Game<'_> {
                     starling_catalog::only_native_mods(
                         horizon_client::mod_builds::buildable().iter().cloned(),
                     );
+                    // And only the content mods without code: one with WebAssembly can't run
+                    // in an iPhone app (horizon_client::mod_builds::runnable_content).
+                    if let Some(content) = horizon_client::mod_builds::runnable_content() {
+                        starling_catalog::only_content_mods(content.iter().cloned());
+                    }
                 }
                 let found =
                     starling_catalog::search(shelf, &query, everything, ask.offset, list::PAGE)
