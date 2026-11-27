@@ -24,6 +24,7 @@ const NOTES: &[Notes] = &[
             "The title screen says when your mods build is downloading and when it is ready.",
             "A mod that can't be built into the app is said so before a build starts.",
             "A build that found no free machine is started again by itself.",
+            "Leaves and plants wave again with a shader pack.",
         ],
     },
     NOTES_1_1_0,
