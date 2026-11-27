@@ -71,7 +71,10 @@ mod tests {
         assert!(due("1.0.0", None).is_none(), "a version without notes");
         assert!(due("", None).is_none());
         // Each release has its own: an app of 1.1.0 that updates reads 1.1.1's.
-        assert_eq!(due("1.1.1", Some("1.1.0")).map(|n| n.version), Some("1.1.1"));
+        assert_eq!(
+            due("1.1.1", Some("1.1.0")).map(|n| n.version),
+            Some("1.1.1")
+        );
     }
 
     #[test]

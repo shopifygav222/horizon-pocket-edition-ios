@@ -291,10 +291,7 @@ mod tests {
             hi: [width, 1.0, width],
         };
         for (width, at_two) in [(0.2, 0.3), (0.6, 0.3), (0.9, 0.45), (1.4, 0.6), (4.0, 0.6)] {
-            assert!(
-                (margin(2.0, &wide(width)) - at_two).abs() < 1e-9,
-                "{width}"
-            );
+            assert!((margin(2.0, &wide(width)) - at_two).abs() < 1e-9, "{width}");
         }
         assert!((margin(1.5, &wide(0.6)) - 0.15).abs() < 1e-6);
         assert_eq!(margin(1.0, &wide(0.6)), 0.0);
@@ -326,6 +323,10 @@ mod tests {
         };
         let inside = wide_hits([0.0; 3], [0.0; 3], REACH, None, 2.0, &[around]);
         assert_eq!(inside.len(), 1);
-        assert!(inside.iter().all(|h| h.miss.is_finite() && h.distance.is_finite()));
+        assert!(
+            inside
+                .iter()
+                .all(|h| h.miss.is_finite() && h.distance.is_finite())
+        );
     }
 }
