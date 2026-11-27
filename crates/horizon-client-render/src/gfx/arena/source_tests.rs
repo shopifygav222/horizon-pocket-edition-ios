@@ -56,6 +56,7 @@ fn terrain_source_arena_gpu_grow_move_recycle_and_refusal() {
         first.0,
         first.1,
         4,
+        4,
         &[source],
     );
     let second = arena.alloc(&device, &mut encoder, GRAIN).unwrap();
@@ -73,6 +74,7 @@ fn terrain_source_arena_gpu_grow_move_recycle_and_refusal() {
         reused.0,
         reused.1,
         4,
+        4,
         &[],
     );
     uploads.finish(&encoder);
@@ -82,7 +84,7 @@ fn terrain_source_arena_gpu_grow_move_recycle_and_refusal() {
             &device,
             &queue,
             arena.sources(third.0).unwrap(),
-            third.1 / 4 * 8,
+            third.1 * 8,
             8
         ),
         bytemuck::bytes_of(&source)
@@ -92,7 +94,7 @@ fn terrain_source_arena_gpu_grow_move_recycle_and_refusal() {
             &device,
             &queue,
             arena.sources(first.0).unwrap(),
-            first.1 / 4 * 8,
+            first.1 * 8,
             8
         ),
         [0; 8]
@@ -100,6 +102,36 @@ fn terrain_source_arena_gpu_grow_move_recycle_and_refusal() {
     assert_eq!(
         read(&device, &queue, arena.buffer(third.0), third.1 * 24, 96),
         bytemuck::cast_slice::<_, u8>(&geometry)
+    );
+
+    // Horizon PE: a compact range's sources lie one a slot from its start, a record's each
+    // (`write_sources`' `apart`), and the slots after them are unknown.
+    let mut encoder = device.create_command_encoder(&Default::default());
+    let mut uploads = super::super::upload::Uploads::new(&device);
+    let records = [source, TerrainSource::new(9, [1, 2, 3], 0, true)];
+    arena.write_sources(
+        &device,
+        &mut encoder,
+        &mut uploads,
+        reused.0,
+        reused.1,
+        4,
+        1,
+        &records,
+    );
+    uploads.finish(&encoder);
+    queue.submit([encoder.finish()]);
+    let mut expected = bytemuck::cast_slice::<_, u8>(&records).to_vec();
+    expected.resize(32, 0);
+    assert_eq!(
+        read(
+            &device,
+            &queue,
+            arena.sources(reused.0).unwrap(),
+            reused.1 * 8,
+            32
+        ),
+        expected
     );
 
     // A real requested binding limit refuses metadata/table allocation. The native
@@ -129,6 +161,7 @@ fn terrain_source_arena_gpu_grow_move_recycle_and_refusal() {
         &mut uploads,
         at.0,
         at.1,
+        4,
         4,
         &[source],
     );

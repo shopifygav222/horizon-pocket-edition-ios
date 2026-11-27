@@ -393,16 +393,11 @@ fn packed_wanted() -> bool {
 
 /// Whether sections' solid quads are laid out compactly (`Renderer::follow_packed_layout`).
 /// `flat`: the device draws terrain flat, which is what reads the compact records. `pack`: a
-/// shader pack is loaded. `native`: a native renderer draws. `on`: the layout is allowed.
-///
-/// Horizon PE: never with a shader pack. A pack tells a leaf from a stone by its quad's source
-/// block (`mc_Entity`, `at_midBlock`), which is kept beside the quads one a quad
-/// (`arena::write_sources`) and is not kept at all for a section laid out compactly. Starling
-/// 0.9.0 kept the compact layout under a pack that draws terrain flat, so every solid block
-/// reached the pack unnamed: leaves, plants and crops stood still, and whatever else a pack
-/// does by block id was lost with it. A pack's terrain is whole vertices, as before 0.9.0.
-fn packed_layout_wanted(flat: bool, pack: bool, native: bool, on: bool) -> bool {
-    flat && !pack && !native && on
+/// shader pack is loaded, and `pack_flat`: it draws its terrain flat too (its vertex stage
+/// then unpacks the records, `pack_atlas::PULL_FLAT`; drawn by section it reads the arena's
+/// vertices as `TerrainVertex`es). `native`: a native renderer draws. `on`: it is allowed.
+fn packed_layout_wanted(flat: bool, pack: bool, pack_flat: bool, native: bool, on: bool) -> bool {
+    flat && (!pack || pack_flat) && !native && on
 }
 
 mod adreno;
@@ -6521,6 +6516,9 @@ impl Renderer {
         });
         let stride = std::mem::size_of::<TerrainVertex>() as u64;
         if solid_slots > 0 {
+            // Horizon PE: a compact section's quads keep their sources too, one a record
+            // (Starling 0.9.0 wrote none for them, so under a shader pack every solid block
+            // reached the pack unnamed: `mc_Entity` -1, and leaves and plants stood still).
             self.arena.write_sources(
                 &self.device,
                 encoder,
@@ -6528,7 +6526,8 @@ impl Renderer {
                 page,
                 start,
                 solid_slots,
-                if packed { &[] } else { &mesh.solid_sources },
+                if packed { 1 } else { 4 },
+                &mesh.solid_sources,
             );
         }
         if translucent_vertices > 0 {
@@ -6542,6 +6541,7 @@ impl Renderer {
                     translucent_at.0,
                     translucent_at.1,
                     translucent_vertices,
+                    4,
                     &mesh.translucent_sources,
                 );
         }
@@ -7062,16 +7062,17 @@ impl Renderer {
             flat.set_translucent_page_vertices(arena.page_vertices());
         }
     }
-    /// Uploads solid quads in the compact layout (`packed_quads`) unless a shader pack is
-    /// loaded (`packed_layout_wanted`: a pack reads the arena's vertices as `TerrainVertex`es
-    /// outside flat draws, and in flat ones it needs each quad's source block, which the
-    /// compact layout does not keep). Leaving it drops every section and far tile for the game
-    /// to mesh again, as `follow_translucent_layout` does.
+    /// Uploads solid quads in the compact layout (`packed_quads`) unless a pack reads the
+    /// arena's vertices as `TerrainVertex`es: Horizon's own packs' stages, and a `shaders/`
+    /// pack's terrain and shadow programs outside flat draws (flat ones unpack the records,
+    /// `pack_atlas::PULL_FLAT`). Leaving it drops every section and far tile for the game to
+    /// mesh again, as `follow_translucent_layout` does.
     fn follow_packed_layout(&mut self) {
         let pack = self.pack_post.as_ref().and_then(|p| p.1.as_ref()).is_some();
         let want = packed_layout_wanted(
             self.flat.is_some(),
             pack,
+            self.pack_terrain_flat,
             self.native.is_some(),
             self.packed_on,
         );
@@ -13721,23 +13722,16 @@ mod tests {
         assert!(u64::from(super::padded_row(w)) * u64::from(h) <= max, "{f}");
         assert!(f > 3.7, "{f}");
     }
-    /// Horizon PE: a shader pack names blocks by their quads' sources, which the compact layout
-    /// drops: under a pack, flat draws or not, terrain is whole vertices (waving leaves).
+    /// The compact layout is for what unpacks its records: flat draws, a pack's too.
     #[test]
-    fn a_shader_pack_keeps_its_terrain_in_whole_vertices() {
+    fn the_compact_layout_is_kept_where_its_records_are_read() {
         use super::packed_layout_wanted as wanted;
-        assert!(wanted(true, false, false, true), "no pack: compact");
-        assert!(!wanted(true, true, false, true), "a pack, drawn flat");
-        assert!(
-            !wanted(false, true, false, true),
-            "a pack, drawn by section"
-        );
-        assert!(
-            !wanted(false, false, false, true),
-            "nothing reads the records"
-        );
-        assert!(!wanted(true, false, true, true), "a native renderer");
-        assert!(!wanted(true, false, false, false), "turned off");
+        assert!(wanted(true, false, false, false, true), "no pack");
+        assert!(wanted(true, true, true, false, true), "a pack, flat");
+        assert!(!wanted(true, true, false, false, true), "by section");
+        assert!(!wanted(false, false, false, false, true), "not flat");
+        assert!(!wanted(true, false, false, true, true), "native");
+        assert!(!wanted(true, false, false, false, false), "off");
     }
     #[test]
     fn drawable_size_skips_minimized_and_oversized_windows() {
