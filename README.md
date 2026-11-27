@@ -98,6 +98,12 @@ accounts stay.
 **In the Control Hub** you can move, resize, recolour or hide any button, and change the button
 size, the hotbar size, the look sensitivity and the left-handed layout.
 
+**Hitbox size** (Options > Touch, from 1.1.1) makes fighting with a thumb easier: above 100%, an
+attack that just misses a player or a creature still hits it. It is off until you raise it, and
+your reach stays the same. It works in your own worlds. On a server it works only if you also turn
+on **Wider hitboxes on servers**: a server can treat it as cheating and kick or ban you, and one
+with anti-cheat may not count those hits at all. That risk is yours to take.
+
 A controller, keyboard or mouse works as soon as you use it; the touch controls step aside.
 
 ## 4. Mods

@@ -45,6 +45,11 @@ const BUILDS_DIR: &str = "native-builds";
 const LARGEST_ARTIFACT: u64 = 512 << 20;
 /// How often a build under way is looked at.
 const POLL: Duration = Duration::from_secs(20);
+/// The app was away (in the background, or the phone asleep) when this long passed between two
+/// frames, in seconds: a build under way is then looked at now, not at its next turn.
+const AWAY_SECS: u64 = 3;
+/// A build under way that no thread follows is followed again, this often at most (seconds).
+const REVIVE_SECS: u64 = 30;
 /// A build the service still doesn't know by then was not started.
 const NEVER_STARTED: Duration = Duration::from_secs(5 * 60);
 
@@ -59,6 +64,10 @@ struct Shared {
     announce: Option<(String, String)>,
     /// A thread follows the build.
     following: bool,
+    /// The build is made and its file is being downloaded.
+    fetching: bool,
+    /// The thread is asked to look at the build now, not when its wait is over.
+    nudge: bool,
     /// Bumped on every change, so the page is redrawn once per change.
     changes: u64,
 }
@@ -68,6 +77,10 @@ pub(super) struct NativeBuilds {
     shared: Arc<Mutex<Shared>>,
     shown: u64,
     loaded: bool,
+    /// When the last frame looked at the build (seconds since 1970).
+    frame: u64,
+    /// When a thread was last started for a build none followed.
+    revived: u64,
 }
 
 fn shared(builds: &NativeBuilds) -> std::sync::MutexGuard<'_, Shared> {
@@ -265,6 +278,48 @@ fn refused_for_good(why: &str) -> bool {
         && !why.starts_with("GitHub did not")
 }
 
+/// Waits [`POLL`] between two looks at a build, or less when the app asks for a look now
+/// ([`Shared::nudge`]: it came back to the front, where the build may long be made). By the
+/// clock on the wall, which runs on while the phone sleeps.
+fn wait(shared: &Mutex<Shared>) {
+    let until = now() + POLL.as_secs();
+    for _ in 0..POLL.as_secs() * 2 {
+        std::thread::sleep(Duration::from_millis(500));
+        let mut s = shared.lock().unwrap_or_else(PoisonError::into_inner);
+        if std::mem::take(&mut s.nudge) || now() >= until {
+            return;
+        }
+    }
+}
+
+/// No thread follows the build any more.
+fn ended(shared: &Mutex<Shared>) {
+    let mut s = shared.lock().unwrap_or_else(PoisonError::into_inner);
+    s.following = false;
+    s.fetching = false;
+    s.changes += 1;
+}
+
+/// [`follow`] on a thread of its own. Whatever ends that thread, [`Shared::following`] says so:
+/// a build under way that nothing follows is followed again (`poll_native_builds`), where it
+/// would else say "Building mods..." for good.
+fn spawn_follow(shared: Arc<Mutex<Shared>>, service: &'static str, device: String) {
+    let theirs = shared.clone();
+    let run = move || {
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            follow(theirs.clone(), service, device);
+        }));
+        ended(&theirs);
+    };
+    if std::thread::Builder::new()
+        .name("mod build".into())
+        .spawn(run)
+        .is_err()
+    {
+        ended(&shared);
+    }
+}
+
 /// Asks the service for the build, then follows it to its .ipa, downloaded, keeping [`Shared`]
 /// (and [`PENDING_FILE`]) up to date. Runs on its own thread.
 fn follow(shared: Arc<Mutex<Shared>>, service: &'static str, device: String) {
@@ -320,6 +375,8 @@ fn follow(shared: Arc<Mutex<Shared>>, service: &'static str, device: String) {
         match answer {
             Ok((key, State::Ready { size })) => {
                 keyed(&key, "Built. Downloading it.".to_owned());
+                // Said on the title screen too: the build is made, and its file takes a while.
+                set(&|s| s.fetching = true);
                 let said = |progress: String| set(&|s| s.progress = progress.clone());
                 match download(service, &key, size, &said) {
                     Ok(ipa) => {
@@ -327,11 +384,13 @@ fn follow(shared: Arc<Mutex<Shared>>, service: &'static str, device: String) {
                             if let Some(p) = &mut s.pending {
                                 p.ipa = Some(ipa.to_string_lossy().into_owned());
                             }
+                            s.fetching = false;
                             s.following = false;
                             s.announce = Some(ready_toast());
                         });
                     }
                     Err(why) => set(&|s| {
+                        s.fetching = false;
                         s.progress = format!("The download stopped ({why}): trying again.");
                     }),
                 }
@@ -365,7 +424,7 @@ fn follow(shared: Arc<Mutex<Shared>>, service: &'static str, device: String) {
             Err(why) if refused_for_good(&why) => return fail(why),
             Err(why) => set(&|s| s.progress = format!("{why} Trying again.")),
         }
-        std::thread::sleep(POLL);
+        wait(&shared);
     }
 }
 
@@ -720,6 +779,8 @@ impl Game<'_> {
                 let mut state = shared(&self.native_builds);
                 state.pending = None;
                 state.progress.clear();
+                // The thread that follows it ends now, so another build can be asked for at once.
+                state.nudge = true;
                 state.changes += 1;
                 save_pending(None);
                 forget_builds();
@@ -789,9 +850,7 @@ impl Game<'_> {
             save_pending(state.pending.as_ref());
         }
         forget_builds();
-        let _ = std::thread::Builder::new()
-            .name("mod build".into())
-            .spawn(move || follow(shared_state, service, device));
+        spawn_follow(shared_state, service, device);
         None
     }
 
@@ -814,6 +873,8 @@ impl Game<'_> {
             "Mods build failed"
         } else if p.ipa.is_some() {
             "Mods ready: install"
+        } else if state.fetching {
+            "Downloading mods..."
         } else {
             "Building mods..."
         };
@@ -844,6 +905,7 @@ impl Game<'_> {
     /// The badge opens the Mods page, whose top has the build.
     pub(super) fn press_build_badge(&mut self) {
         self.audio.play_button_click();
+        shared(&self.native_builds).nudge = true;
         self.open_options_at(true, Page::Mods);
     }
 
@@ -877,25 +939,41 @@ impl Game<'_> {
             {
                 p.ipa = None;
             }
-            let service = mod_builds::service();
-            let follow_it = service.is_some() && pending.as_ref().is_some_and(Pending::under_way);
-            // A build that waits to be installed says so again at each start.
+            // A build that waits to be installed says so again at each start. One under way is
+            // followed again just below, as any that nothing follows.
             let waiting = pending.as_ref().is_some_and(|p| p.ipa.is_some());
+            let mut state = shared(&self.native_builds);
+            state.pending = pending;
+            state.following = false;
+            state.announce = waiting.then(ready_toast);
+            state.changes += 1;
+        }
+        // The app was away: a build under way is looked at now. And one that nothing follows
+        // (the app just started, or its thread ended some way it should not have) is followed.
+        let at = now();
+        let away = at.saturating_sub(self.native_builds.frame) >= AWAY_SECS;
+        self.native_builds.frame = at;
+        let lost = {
+            let mut state = shared(&self.native_builds);
+            if away && state.following {
+                state.nudge = true;
+            }
+            !state.following && state.pending.as_ref().is_some_and(Pending::under_way)
+        };
+        if lost
+            && at.saturating_sub(self.native_builds.revived) >= REVIVE_SECS
+            && let Some(service) = mod_builds::service()
+        {
+            self.native_builds.revived = at;
             {
                 let mut state = shared(&self.native_builds);
-                state.pending = pending;
-                state.following = follow_it;
-                state.announce = waiting.then(ready_toast);
+                state.following = true;
+                state.nudge = false;
                 state.changes += 1;
             }
-            if let (true, Some(service)) = (follow_it, service) {
-                let shared_state = self.native_builds.shared.clone();
-                let device =
-                    mod_builds::device(&horizon_client::logging::private_home().join(DEVICE_FILE));
-                let _ = std::thread::Builder::new()
-                    .name("mod build".into())
-                    .spawn(move || follow(shared_state, service, device));
-            }
+            let device =
+                mod_builds::device(&horizon_client::logging::private_home().join(DEVICE_FILE));
+            spawn_follow(self.native_builds.shared.clone(), service, device);
         }
         let announce = shared(&self.native_builds).announce.take();
         if let Some((title, line)) = announce {

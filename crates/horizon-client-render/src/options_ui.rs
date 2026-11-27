@@ -277,6 +277,8 @@ impl Opt {
             Opt::TouchBigHotbar => "Bigger hotbar",
             Opt::TouchHotbarSize => "Hotbar size",
             Opt::TouchPlaceOneWay => "Hold Use builds one way",
+            Opt::TouchHitboxScale => "Hitbox size",
+            Opt::TouchHitboxServers => "Wider hitboxes on servers",
             Opt::TouchMouseSensitivity => "Virtual mouse sensitivity",
             Opt::TouchAnalog => "360-degree movement",
             Opt::TouchCircleSize => "Touch circle size",
@@ -458,6 +460,10 @@ impl Opt {
             Opt::TouchHotbarSize => {
                 let [least, most] = crate::android_controls::pocket::SLOT_MM_RANGE;
                 unit(s.touch.hotbar_mm, least, most)
+            }
+            Opt::TouchHitboxScale => {
+                let [least, most] = crate::android_controls::wide_hits::SCALE_RANGE;
+                unit(s.touch.hitbox_scale, least, most)
             }
 
             Opt::ModSetting(i, j) => {
@@ -706,6 +712,22 @@ impl Opt {
             Opt::TouchBigHotbar => Some(if s.touch.big_hotbar { "ON" } else { "OFF" }.into()),
             Opt::TouchHotbarSize => Some(format!("{:.1} mm slots", s.touch.hotbar_mm)),
             Opt::TouchPlaceOneWay => Some(if s.touch.place_one_way { "ON" } else { "OFF" }.into()),
+            Opt::TouchHitboxScale => {
+                let scale = s.touch.hitbox_scale;
+                Some(if crate::android_controls::wide_hits::on(scale) {
+                    format!("{:.0}%", scale * 100.0)
+                } else {
+                    "100% (off)".into()
+                })
+            }
+            Opt::TouchHitboxServers => Some(
+                if s.touch.hitbox_on_servers {
+                    "ON (ban risk)"
+                } else {
+                    "OFF"
+                }
+                .into(),
+            ),
             Opt::TouchAttackButtonLook => Some(
                 if s.touch.attack_button_look {
                     "ON"
@@ -1204,6 +1226,11 @@ impl Opt {
                 // The size is the bigger hotbar's: asking for one turns it on.
                 s.touch.big_hotbar = true;
             }
+            Opt::TouchHitboxScale => {
+                // In steps of 5%, so the slider's low end is exactly the game's own hitboxes.
+                let [least, most] = crate::android_controls::wide_hits::SCALE_RANGE;
+                s.touch.hitbox_scale = ((least + v * (most - least)) * 20.0).round() / 20.0;
+            }
 
             Opt::ChatDelay => values::set(s, v),
             Opt::FovEffects | Opt::DarknessPulsing => s.file.set(
@@ -1350,6 +1377,7 @@ impl Opt {
             Opt::TouchHoldAttack => s.touch.hold_attack ^= true,
             Opt::TouchBigHotbar => s.touch.big_hotbar ^= true,
             Opt::TouchPlaceOneWay => s.touch.place_one_way ^= true,
+            Opt::TouchHitboxServers => s.touch.hitbox_on_servers ^= true,
             Opt::TouchAttackSide => s.touch.attack_indicator_left ^= true,
             Opt::TouchSwapJumpSneak => s.touch.swap_jump_sneak ^= true,
             Opt::TouchAutoSprint => s.touch.sprint_with_joystick ^= true,
@@ -4887,6 +4915,17 @@ impl OptionsUi {
                     Opt::TouchSensitivityHorizontal,
                     Opt::TouchSensitivityVertical,
                 ]));
+                // Horizon PE: "Hitbox size" (android_controls/wide_hits.rs), and what it risks.
+                rows.push(Row::Header("Wider Hitboxes"));
+                rows.extend(pairs(&[Opt::TouchHitboxScale, Opt::TouchHitboxServers]));
+                rows.push(Row::Body(
+                    "Above 100%, an attack that just misses a player or a creature still hits \
+                     it. Your reach stays the same. It works in your own worlds. On a server it \
+                     works only with the switch on: a server can treat it as cheating and kick \
+                     or ban you, and one with anti-cheat may not count those hits at all."
+                        .into(),
+                    true,
+                ));
                 rows.push(Row::Header("Control Hub & Feedback"));
                 rows.extend(pairs(&[
                     Opt::TouchControlHub,

@@ -461,7 +461,8 @@ impl Game<'_> {
         let debug = std::mem::take(&mut tc.debug_requested);
         let settings = std::mem::take(&mut tc.settings_requested);
         if let Some(held_use) = tap {
-            if self.pick_entity_hit().is_some()
+            // Horizon PE: and with "Hitbox size" the creature the tap just misses.
+            if self.attack_finds_entity()
                 && self.using.is_none()
                 && self.screen == Screen::Playing
             {

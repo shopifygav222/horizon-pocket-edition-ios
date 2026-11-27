@@ -89,6 +89,15 @@ impl Game<'_> {
                 None => HoldTarget::Thing,
             };
         }
+        // "Hitbox size": the creature the crosshair just misses is held on as if it were on it.
+        if let Some((index, _)) = self.wide_attack_hit() {
+            let mob = &self.mobs[index];
+            return if mob.is_enemy() {
+                HoldTarget::Monster(mob.id as i32)
+            } else {
+                HoldTarget::Living(mob.id as i32)
+            };
+        }
         if self.pick().is_some() {
             HoldTarget::Block
         } else {

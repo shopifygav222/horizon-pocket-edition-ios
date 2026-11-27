@@ -25,7 +25,7 @@ settings:
   base:
     # Horizon PE's version, the one place it is set: what iOS Settings, the sideloading apps and the
     # Mods page show (CFBundleShortVersionString). The build number is the workflow run's.
-    MARKETING_VERSION: 1.1.0
+    MARKETING_VERSION: 1.1.1
     CURRENT_PROJECT_VERSION: 1
     IPHONEOS_DEPLOYMENT_TARGET: 16.0
     ENABLE_STRICT_OBJC_MSGSEND: YES
