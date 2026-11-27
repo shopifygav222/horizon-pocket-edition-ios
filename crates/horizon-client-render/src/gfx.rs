@@ -13728,8 +13728,14 @@ mod tests {
         use super::packed_layout_wanted as wanted;
         assert!(wanted(true, false, false, true), "no pack: compact");
         assert!(!wanted(true, true, false, true), "a pack, drawn flat");
-        assert!(!wanted(false, true, false, true), "a pack, drawn by section");
-        assert!(!wanted(false, false, false, true), "nothing reads the records");
+        assert!(
+            !wanted(false, true, false, true),
+            "a pack, drawn by section"
+        );
+        assert!(
+            !wanted(false, false, false, true),
+            "nothing reads the records"
+        );
         assert!(!wanted(true, false, true, true), "a native renderer");
         assert!(!wanted(true, false, false, false), "turned off");
     }
