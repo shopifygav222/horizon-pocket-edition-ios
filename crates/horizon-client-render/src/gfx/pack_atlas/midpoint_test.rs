@@ -378,6 +378,148 @@ fn compact_records_feed_a_pack_the_vertices_they_hold() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
+/// Horizon PE: a pack is told each solid quad's block (`mc_Entity`, `at_midBlock`) from the
+/// compact layout exactly as from whole vertices: a record's quad and a quad kept whole in it
+/// alike. Starling 0.9.0 kept no source for a compact section, so under a shader pack no solid
+/// block had an id and leaves, plants and crops stood still.
+#[test]
+fn compact_records_keep_each_quads_block() {
+    let _gpu = crate::gfx::test_gpu::lock();
+    use crate::mesher::{TerrainSource, packed};
+    let instance = crate::gfx::test_gpu::instance();
+    let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
+        // Where a GPU is promised (ios-guard's software one), none is a failure, not a pass.
+        assert!(
+            std::env::var_os("HORIZON_REQUIRE_GPU").is_none(),
+            "no adapter to test on"
+        );
+        return;
+    };
+    let (device, queue) = pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d {
+            width: 16,
+            height: 16,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let mut encoder = device.create_command_encoder(&Default::default());
+    let atlas = PackAtlas::new(&device, &mut encoder, &[texture], 1, 1, 16).unwrap();
+    queue.submit([encoder.finish()]);
+    let tint = 0x7F_B238u32;
+    let face = |x: f32, y: f32| {
+        let pos = [
+            [x, y, 5.0],
+            [x, y, 6.0],
+            [x + 1.0, y, 6.0],
+            [x + 1.0, y, 5.0],
+        ];
+        let uv = [[0, 0], [16 << 10, 0], [16 << 10, 16 << 10], [0, 16 << 10]];
+        (0..4).map(move |i| {
+            let [r, g, b] = [16, 8, 0].map(|s| 200 * (tint >> s & 255) / 255);
+            TerrainVertex {
+                pos: pos[i],
+                uv: uv[i],
+                layer: 0x8000,
+                light: 0xF0 | 0x40 << 8,
+                color: r | g << 8 | b << 16 | 255 << 24,
+            }
+        })
+    };
+    // Three whole faces, which pack, and a slab's top, which stays four vertices.
+    let solid: Vec<_> = [(3.0, 16.0), (5.0, 16.0), (7.0, 16.0), (3.0, 8.5)]
+        .into_iter()
+        .flat_map(|(x, y)| face(x, y))
+        .collect();
+    let records = packed::layout(&solid, &[tint; 4]);
+    assert_eq!(packed::packed_quads(&records, 4), 3);
+    // Each quad's block: its state, its cell in the section, the light it gives off, and
+    // whether it is a fluid.
+    let blocks = [
+        (1u32, [3, 15, 5], 0u8, false),
+        (2, [5, 15, 5], 7, false),
+        (3, [7, 15, 5], 15, false),
+        (4, [3, 8, 5], 4, true),
+    ];
+    let sources =
+        blocks.map(|(state, cell, light, fluid)| TerrainSource::new(state, cell, light, fluid));
+    // The pack's ids of five states: 100 and up as a model, 200 and up as a fluid.
+    let table: Vec<i32> = (0..5)
+        .flat_map(|state| [100 + state, 200 + state])
+        .collect();
+    // One source a slot, at its quad's first: every fourth among whole vertices, the first
+    // slots (the records, in the quads' order) of the compact layout.
+    let unknown = TerrainSource::default();
+    let wide_sources: Vec<_> = sources
+        .iter()
+        .flat_map(|&source| [source, unknown, unknown, unknown])
+        .collect();
+    let mut compact_sources = vec![TerrainSource::default(); records.len()];
+    compact_sources[..sources.len()].copy_from_slice(&sources);
+    let origin = f32::from_bits((1. / UV_STEPS).to_bits());
+    let packed_range = packed::PACKED_BASE..packed::PACKED_BASE + 16;
+    let mut failures = Vec::new();
+    for expression in ["mc_Entity", "at_midBlock"] {
+        for shadow in [false, true] {
+            let flags = [true, shadow];
+            let wide = sample_sourced(
+                &device,
+                &queue,
+                &atlas,
+                bytemuck::cast_slice(&solid),
+                0..16,
+                origin,
+                flags,
+                expression,
+                bytemuck::cast_slice(&wide_sources),
+                &table,
+            );
+            let compact = sample_sourced(
+                &device,
+                &queue,
+                &atlas,
+                bytemuck::cast_slice(&records),
+                packed_range.clone(),
+                origin,
+                flags,
+                expression,
+                bytemuck::cast_slice(&compact_sources),
+                &table,
+            );
+            if wide != compact {
+                failures.push(format!(
+                    "{expression} shadow={shadow}: {wide:?} != {compact:?}"
+                ));
+            }
+            // And what they agree on is the block, not "unknown" twice.
+            for (quad, (state, _, light, fluid)) in blocks.iter().enumerate() {
+                let base = if *fluid { 200 } else { 100 };
+                let id = (base + state) as f32;
+                for corner in &compact[4 * quad..4 * quad + 4] {
+                    let right = if expression == "mc_Entity" {
+                        corner[0] == id && corner[1] == f32::from(u8::from(*fluid))
+                    } else {
+                        corner[3] == f32::from(*light)
+                    };
+                    if !right {
+                        failures.push(format!(
+                            "{expression} shadow={shadow}: quad {quad} reads {corner:?}"
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
 fn sample(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -421,8 +563,40 @@ fn sample_page(
     page: &[u8],
     drawn: std::ops::Range<u32>,
     scale: f32,
+    flags: [bool; 2],
+    expression: &str,
+) -> Vec<[f32; 4]> {
+    // No quad's source is known, and the pack has no ids.
+    let unknown = [0u32; 2];
+    let sources = bytemuck::bytes_of(&unknown);
+    sample_sourced(
+        device,
+        queue,
+        atlas,
+        page,
+        drawn,
+        scale,
+        flags,
+        expression,
+        sources,
+        &[],
+    )
+}
+
+/// `sample_page` with the page's source records, one a slot (`arena::write_sources`), and the
+/// pack's ids of the states, a model's and a fluid's each (`pack_post::terrain_tables`).
+#[allow(clippy::too_many_arguments)]
+fn sample_sourced(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    atlas: &PackAtlas,
+    page: &[u8],
+    drawn: std::ops::Range<u32>,
+    scale: f32,
     [flat, shadow]: [bool; 2],
     expression: &str,
+    sources: &[u8],
+    table: &[i32],
 ) -> Vec<[f32; 4]> {
     let count = drawn.len() as u32;
     let pp = |code| horizon_shaders::Preprocessed {
@@ -560,14 +734,14 @@ fn sample_page(
         bytemuck::bytes_of(&[0., 0., 0., scale]),
         wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::VERTEX,
     );
-    let ids = buffer(bytemuck::bytes_of(&[0u32; 2]), wgpu::BufferUsages::STORAGE);
+    let ids = buffer(sources, wgpu::BufferUsages::STORAGE);
     let data = buffer(
         page,
         wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::VERTEX,
     );
     let rects = buffer(
         bytemuck::cast_slice(&super::super::pack_post::terrain_tables(
-            &[],
+            table,
             &atlas.rects_table(),
         )),
         wgpu::BufferUsages::STORAGE,
