@@ -11,7 +11,7 @@
 //! The server is told the entity, as for any hit. This game's own server and a vanilla one
 //! check how far its box is, which this keeps to the game's own reach. A server that also checks
 //! where the player looked may refuse the hit or punish it: on any server but the player's own
-//! it is off unless they turned "Wider hitboxes on servers" on, under a warning that says so.
+//! it is off unless they turned "On servers too" on, under a warning that says so.
 use super::Game;
 
 impl Game<'_> {

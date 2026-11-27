@@ -13,8 +13,9 @@
 //! Whether the body can be seen at all (not round a corner, not through a door) is the game's
 //! to say: it has the blocks. The hits come best first so it can take the first it sees.
 
-/// The setting's range: 1 is the game's own hitboxes, 2 a player twice as wide.
-pub const SCALE_RANGE: [f32; 2] = [1.0, 2.0];
+/// The setting's range: 1 is the game's own hitboxes, 2 a player twice as wide. Its end is the
+/// owner's choice (2026-11-27, after playing with 2): a little past twice.
+pub const SCALE_RANGE: [f32; 2] = [1.0, 2.25];
 /// The half width a body's margin is worked out from is held between these, in blocks: a
 /// silverfish is no harder to hit than a player, and a ghast's zone is not blocks deep.
 const HALF_WIDTH: [f64; 2] = [0.3, 0.6];
@@ -201,7 +202,7 @@ mod tests {
             assert_eq!(first(None, scale, &near), None, "{scale}");
         }
         // A number past the range is the range's end, not more.
-        assert_eq!(clean(9.0), 2.0);
+        assert_eq!(clean(9.0), 2.25);
         assert_eq!(clean(f32::INFINITY), 1.0);
         assert!(on(1.05));
     }
@@ -294,6 +295,8 @@ mod tests {
             assert!((margin(2.0, &wide(width)) - at_two).abs() < 1e-9, "{width}");
         }
         assert!((margin(1.5, &wide(0.6)) - 0.15).abs() < 1e-6);
+        // The range's end: a player's zone is 0.375 of a block past its box.
+        assert!((margin(SCALE_RANGE[1], &wide(0.6)) - 0.375).abs() < 1e-6);
         assert_eq!(margin(1.0, &wide(0.6)), 0.0);
         assert_eq!(margin(f32::NAN, &wide(0.6)), 0.0);
         // A box that is not square is as wide as its wider side.
