@@ -1,7 +1,7 @@
 // The mod builds Worker against a GitHub that is a table in memory: `node --test`.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildKey, handle, readMods, WORKFLOW } from "./worker.js";
+import { buildableLists, buildKey, handle, readMods, WORKFLOW } from "./worker.js";
 
 const REPO = "someone/horizon-pocket-edition-ios";
 const TAG = "v1.1.0-shared-worlds-mods";
@@ -25,10 +25,22 @@ function store() {
 }
 
 /// GitHub's API for one repository: its artifacts, its workflow's runs, and what was asked of it.
-function github({ artifacts = [], runs = [], jobs = {}, dispatch = 204 } = {}) {
+/// `buildable`: the repository's list of the mods a build can take (none: the file can't be read).
+function github({ artifacts = [], runs = [], jobs = {}, dispatch = 204, buildable = null } = {}) {
   const asked = [];
+  const lists = [];
   const fetcher = async (url, init = {}) => {
-    const { pathname, searchParams } = new URL(url);
+    const { pathname, searchParams, hostname } = new URL(url);
+    if (hostname === "raw.githubusercontent.com") {
+      // The public file: asked for without the token.
+      assert.equal(init.headers?.authorization, undefined);
+      assert.equal(pathname, `/${REPO}/main/packaging/ios/catalog-buildable.json`);
+      lists.push(pathname);
+      if (buildable === null) return new Response("not found", { status: 404 });
+      return typeof buildable === "string"
+        ? new Response(buildable)
+        : Response.json({ engine: "starling-0.9.0", mods: buildable });
+    }
     asked.push({ method: init.method ?? "GET", pathname, body: init.body, init });
     assert.equal(init.headers.authorization, "Bearer token");
     const base = `/repos/${REPO}/actions`;
@@ -54,7 +66,7 @@ function github({ artifacts = [], runs = [], jobs = {}, dispatch = 204 } = {}) {
     }
     return new Response("not found", { status: 404 });
   };
-  return { fetcher, asked };
+  return { fetcher, asked, lists };
 }
 
 const env = (more = {}) => ({ REPO, GITHUB_TOKEN: "token", LIMITS: store(), ...more });
@@ -243,6 +255,39 @@ test("a device and a day have only so many builds", async () => {
     NOW + 24 * 60 * 60 * 1000,
   );
   assert.equal(tomorrow.status, 202);
+});
+
+test("a mod no build takes is refused before a build is started or counted", async () => {
+  buildableLists.clear();
+  const list = { waymap: "1.2.0", appleskin: "3.0.1" };
+  const { fetcher, asked, lists } = github({ buildable: list });
+  const e = env();
+  const one = await handle(asking(["waymap@1.2.0", "voice_chat@1.0.3"]), e, fetcher, NOW);
+  assert.equal(one.status, 400);
+  assert.match((await one.json()).error, /^voice_chat can't be built into the app\./);
+  const two = await handle(asking(["freecam_plus@2.0.1", "voice_chat@1.0.3"]), e, fetcher, NOW);
+  assert.match((await two.json()).error, /^freecam_plus, voice_chat can't be built/);
+  // GitHub was asked nothing, and the device's day is whole.
+  assert.equal(asked.length, 0);
+  assert.equal(e.LIMITS.map.size, 0);
+  // A mod of the list is built, in a newer version too; the list was read once for all of this.
+  const fine = await handle(asking(["waymap@1.3.0", "appleskin@3.0.1"]), e, fetcher, NOW);
+  assert.equal(fine.status, 202);
+  assert.equal(lists.length, 1);
+  // Read again when it is old; a list that can't be read then leaves the one known.
+  const later = NOW + 11 * 60 * 1000;
+  const gone = github();
+  const still = await handle(asking(["voice_chat@1.0.3"]), env(), gone.fetcher, later);
+  assert.equal(still.status, 400);
+  assert.equal(gone.lists.length, 1);
+  // No list at all (a fork without the file, GitHub's files down, not a list): nothing is refused.
+  for (const buildable of [null, "<html>", "{}", '{"mods":{}}', '{"mods":[]}']) {
+    buildableLists.clear();
+    const none = github({ buildable });
+    const open = await handle(asking(["voice_chat@1.0.3"]), env(), none.fetcher, NOW);
+    assert.equal(open.status, 202, String(buildable));
+  }
+  buildableLists.clear();
 });
 
 test("a build nobody made, a wrong address and a service not set up say so", async () => {

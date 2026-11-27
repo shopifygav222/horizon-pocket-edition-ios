@@ -44,8 +44,6 @@ fn buildable_in(
 /// with, or the repository's newer one for the same engine (mods published since), asked for
 /// once. It blocks: the catalog asks from its search thread.
 pub fn buildable() -> &'static std::collections::BTreeSet<String> {
-    static LIST: std::sync::OnceLock<std::collections::BTreeSet<String>> =
-        std::sync::OnceLock::new();
     LIST.get_or_init(|| {
         let (engine, built_with) = buildable_in(BUILDABLE, None).unwrap_or_default();
         let url = format!(
@@ -62,6 +60,19 @@ pub fn buildable() -> &'static std::collections::BTreeSet<String> {
             .and_then(|response| response.into_string().ok())
             .and_then(|text| buildable_in(&text, Some(&engine)))
             .map_or(built_with, |(_, newer)| newer)
+    })
+}
+
+/// [`buildable`]'s list, once it was asked for.
+static LIST: std::sync::OnceLock<std::collections::BTreeSet<String>> = std::sync::OnceLock::new();
+
+/// [`buildable`] without the network, for what is drawn: the list the catalog asked for, if it
+/// has, else the one the app was built with.
+pub fn buildable_known() -> &'static std::collections::BTreeSet<String> {
+    static OWN: std::sync::OnceLock<std::collections::BTreeSet<String>> =
+        std::sync::OnceLock::new();
+    LIST.get().unwrap_or_else(|| {
+        OWN.get_or_init(|| buildable_in(BUILDABLE, None).unwrap_or_default().1)
     })
 }
 
@@ -327,6 +338,10 @@ mod tests {
     #[test]
     fn the_buildable_list_is_this_engines_or_none() {
         let (engine, built_with) = buildable_in(BUILDABLE, None).expect("the list the app carries");
+        // What is drawn knows the list without asking for it; the mods that change the game's own
+        // source (in the catalog, and in no build) are not on it.
+        assert_eq!(buildable_known(), &built_with);
+        assert!(!built_with.contains("voice_chat") && !built_with.contains("freecam_plus"));
         assert!(!engine.is_empty());
         assert!(built_with.iter().all(|id| names_a_mod(id, "0")));
         let text =
