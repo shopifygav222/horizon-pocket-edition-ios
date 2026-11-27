@@ -476,7 +476,8 @@ impl Game<'_> {
         // Zoomed while the button says so (tapped on, or a finger on it), in play.
         let zoom = tc.zoom_held() && !in_menu && !editing && self.focused;
         if let Some(held_use) = tap {
-            if self.pick_entity_hit().is_some()
+            // Horizon PE: and with "Hitbox size" the creature the tap just misses.
+            if self.attack_finds_entity()
                 && self.using.is_none()
                 && self.screen == Screen::Playing
             {

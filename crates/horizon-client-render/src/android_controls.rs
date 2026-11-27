@@ -41,6 +41,8 @@ pub use editor::{Editor, EditorDragKind, PickerStep};
 pub mod layout;
 /// Horizon PE: this port's own rules for the controls (pocket.rs).
 pub mod pocket;
+/// Horizon PE: "Hitbox size", the attack that just misses and still lands (wide_hits.rs).
+pub mod wide_hits;
 pub use layout::{
     Control, ControlStyle, JoystickMoveArea, JoystickStyle, Mode, Placement, PresetMeta, Settings,
 };

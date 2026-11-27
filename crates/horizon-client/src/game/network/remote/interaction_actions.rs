@@ -136,6 +136,10 @@ impl Game<'_> {
             && self.before_block(distance)
         {
             self.remote_attack_entity(self.mobs[i].id as i32, distance);
+        } else if let Some((i, distance)) = self.wide_attack_hit() {
+            // Horizon PE: "Hitbox size". The ray is on no entity, and the creature it just
+            // misses is hit instead of the block behind it or the air (game/pocket/wide_hits.rs).
+            self.remote_attack_entity(self.mobs[i].id as i32, distance);
         } else if !self.entity_targeted()
             && let Some(hit) = self.pick()
         {

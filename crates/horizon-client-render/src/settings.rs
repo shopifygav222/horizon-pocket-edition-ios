@@ -868,6 +868,10 @@ pub enum Opt {
     TouchHotbarSize,
     /// Horizon PE: `touch.place_one_way`.
     TouchPlaceOneWay,
+    /// Horizon PE: `touch.hitbox_scale`.
+    TouchHitboxScale,
+    /// Horizon PE: `touch.hitbox_on_servers`.
+    TouchHitboxServers,
     TouchDynamicJoystick,
     TouchDynamicAreaX,
     TouchDynamicAreaY,

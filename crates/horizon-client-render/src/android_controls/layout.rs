@@ -556,6 +556,12 @@ pub struct Settings {
     /// Horizon PE: a held Use button with a block in hand places only on the side its first
     /// block went on (`pocket::PlaceHold`). Off: on whatever side the crosshair is on.
     pub place_one_way: bool,
+    /// Horizon PE: "Hitbox size" (`wide_hits`): an attack that just misses a player or a creature
+    /// lands on it, as if its box were this many times as wide. 1: the game's own hitboxes.
+    pub hitbox_scale: f32,
+    /// Horizon PE: and on servers that are not the player's own world too, where it can be
+    /// taken for cheating. Off: only in their own worlds.
+    pub hitbox_on_servers: bool,
     pub gyroscope: bool,
     pub gyro_sensitivity: f32,
     pub attack_indicator_left: bool,
@@ -749,6 +755,8 @@ impl Default for Settings {
             big_hotbar: true,
             hotbar_mm: super::pocket::SLOT_MM,
             place_one_way: true,
+            hitbox_scale: 1.0,
+            hitbox_on_servers: false,
             gyroscope: false,
             gyro_sensitivity: 1.0,
             attack_indicator_left: true,
@@ -996,6 +1004,7 @@ impl Settings {
         } else {
             super::pocket::SLOT_MM
         };
+        self.hitbox_scale = super::wide_hits::clean(self.hitbox_scale);
         self.dynamic_area_x = if self.dynamic_area_x.is_finite() {
             self.dynamic_area_x.clamp(0.0, 1.0)
         } else {
