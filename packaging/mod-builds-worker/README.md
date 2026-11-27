@@ -59,6 +59,7 @@ itself starts. An app built before it shows no Build button and says it has no b
 | "GitHub did not start the build (401)" or "(403)" | The token expired or lacks *Actions: Read and write*: make a new one (step 1) and put it in the Worker's settings on Cloudflare, under **Variables and Secrets** |
 | "This app's version has no builds with mods" | The app is older than 1.1.0, or its release tag was deleted |
 | "This device has started 6 builds today" | The daily limit; tomorrow there are more |
+| "... can't be built into the app" | That mod changes the game's own code, which no build from the catalog does. Turn it off on the Mods page and build again |
 | "The build failed at: ..." | The build itself failed. It is on this repository's **Actions** page, under **mod-build** |
 
 To turn the service off, delete the Worker in Cloudflare's dashboard and delete the token on

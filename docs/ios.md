@@ -73,7 +73,8 @@ that changes the game's own source (Horizon's older "mixin" format, and the newe
 `[native.mixin]`, `[native.bridge]` or `[native.module]` in their manifest) is not built from the
 catalog, nor is one with a build script or a dependency that is not a public Rust crate. Of the
 rest, the `catalog-mods-check` workflow compiles each against this version's mod API, and the
-catalog on the phone lists only the ones that compile (`packaging/ios/catalog-buildable.json`):
+catalog on the phone lists only the ones that compile, and the Mods page and the build service
+both refuse a mod that is not among them (`packaging/ios/catalog-buildable.json`):
 the catalog's mods are written for Horizon's newest version, and this port is on Starling 0.9.0's.
 The Shared Worlds + Mods edition's fifteen built-in mods are in the older format and are part of
 that edition's source (`native-mods/`): every build of it has them.

@@ -30,6 +30,11 @@ const FAILED_HOLD_MS = 60 * 60 * 1000;
 // GitHub lists a run a few seconds after it is asked for: meanwhile the key is remembered as
 // started, so two requests a moment apart start one build.
 const STARTED_TTL = 180;
+// The catalog's mods a build can take (the repository's packaging/ios/catalog-buildable.json, on
+// its main branch): read at most this often.
+const BUILDABLE_FRESH_MS = 10 * 60 * 1000;
+/// The lists read, by repository: { at, ids }.
+export const buildableLists = new Map();
 
 const json = (body, status = 200) =>
   new Response(JSON.stringify(body), {
@@ -64,6 +69,38 @@ export async function buildKey(tag, mods) {
   const bytes = new TextEncoder().encode(`${tag}\n${mods.join(",")}`);
   const hash = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
   return [...hash.slice(0, 12)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/// The ids of the catalog's mods a build can take, or null when the list can't be read: then
+/// nothing is refused by it, and a mod no build takes fails in the build itself, as before.
+async function buildable(repo, fetcher, now) {
+  const known = buildableLists.get(repo);
+  if (known && now - known.at < BUILDABLE_FRESH_MS) return known.ids;
+  try {
+    const response = await fetcher(
+      `https://raw.githubusercontent.com/${repo}/main/packaging/ios/catalog-buildable.json`,
+      { headers: { "user-agent": "horizon-pe-mod-builds" } },
+    );
+    if (!response.ok) return known?.ids ?? null;
+    const mods = (await response.json())?.mods;
+    if (!mods || typeof mods !== "object" || Array.isArray(mods)) return known?.ids ?? null;
+    const ids = new Set(Object.keys(mods));
+    if (ids.size === 0) return known?.ids ?? null;
+    buildableLists.set(repo, { at: now, ids });
+    return ids;
+  } catch {
+    return known?.ids ?? null;
+  }
+}
+
+/// Why these mods are not built, when one of them is a mod no build takes; else null.
+export function unbuildable(mods, ids) {
+  if (!ids) return null;
+  const not = mods.map((mod) => mod.split("@")[0]).filter((id) => !ids.has(id));
+  if (not.length === 0) return null;
+  return not.length === 1
+    ? `${not[0]} can't be built into the app. Turn it off and build again.`
+    : `${not.join(", ")} can't be built into the app. Turn them off and build again.`;
 }
 
 function settings(env) {
@@ -180,7 +217,7 @@ async function allow(kv, s, device, now) {
   return null;
 }
 
-async function start(request, env, s, api, now) {
+async function start(request, env, s, api, fetcher, now) {
   let body;
   try {
     body = await request.json();
@@ -196,6 +233,10 @@ async function start(request, env, s, api, now) {
   }
   const read = readMods(body.mods, s.maxMods);
   if (read.error) return refuse(400, read.error);
+  // A mod that changes the game's own source is in the catalog and in no build: said now, not
+  // by a build that fails some minutes in and counts against the device's day.
+  const not = unbuildable(read.mods, await buildable(s.repo, fetcher, now));
+  if (not) return refuse(400, not);
   const key = await buildKey(tag, read.mods);
   const kv = env.LIMITS;
   const known = await state(api, kv, key);
@@ -250,7 +291,7 @@ export async function handle(request, env, fetcher = fetch, now = Date.now()) {
   try {
     if (parts.length === 2) {
       if (request.method !== "POST") return refuse(405, "A build is asked for with POST.");
-      return await start(request, env, s, api, now);
+      return await start(request, env, s, api, fetcher, now);
     }
     if (request.method !== "GET") return refuse(405, "A build is read with GET.");
     if (!KEY.test(parts[2])) return refuse(400, "That is not a build's key.");

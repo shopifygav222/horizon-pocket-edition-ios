@@ -187,8 +187,10 @@ pub(super) fn official_build() -> bool {
 }
 
 /// The catalog mods in the `horizon-native-mods` folder that are turned on, by id with their
-/// version, and the ids of those there that no build takes (the older bundles, which change the
-/// game's own source).
+/// version, and the ids of those there that no build takes: the older bundles, and the catalog's
+/// mods that are not on the list of those a build takes (`mod_builds::buildable`: they change the
+/// game's own source, or don't compile against this engine). The catalog leaves those off its
+/// shelf, and a file comes into the folder other ways too.
 fn folder_mods_on(off: &BTreeSet<String>) -> (BTreeMap<String, String>, Vec<String>) {
     let folder = Game::game_dir().join(horizon_client::mod_list::NATIVE_DIR);
     let mut on = BTreeMap::new();
@@ -210,7 +212,10 @@ fn folder_mods_on(off: &BTreeSet<String>) -> (BTreeMap<String, String>, Vec<Stri
             continue;
         }
         match &found {
-            Any::Flat(_) if mod_builds::names_a_mod(found.id(), found.version()) => {
+            Any::Flat(_)
+                if mod_builds::names_a_mod(found.id(), found.version())
+                    && mod_builds::buildable_known().contains(found.id()) =>
+            {
                 on.insert(found.id().to_owned(), found.version().to_owned());
             }
             _ => untaken.push(found.id().to_owned()),
@@ -586,10 +591,12 @@ impl Game<'_> {
             warning(
                 &mut game,
                 format!(
-                    "{} {} in an older format that can't be built into the app. Use the \
-                     catalog's version, if it has one.",
+                    "{} can't be built into the app: {} in an older format, or {} the \
+                     game's own code. Turn {} off, or use the catalog's version if it has one.",
                     listed(&untaken),
-                    if untaken.len() == 1 { "is" } else { "are" }
+                    if untaken.len() == 1 { "it is" } else { "they are" },
+                    if untaken.len() == 1 { "changes" } else { "change" },
+                    if untaken.len() == 1 { "it" } else { "them" }
                 ),
             );
         }
