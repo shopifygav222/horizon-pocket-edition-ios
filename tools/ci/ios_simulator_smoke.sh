@@ -76,7 +76,7 @@ if [ -n "$catalog_mods" ]; then
   fi
   built=$(grep -F 'Horizon: mods built into this app:' "$logs/stderr.log" 2>/dev/null || true)
   for mod in ${catalog_mods//,/ }; do
-    if ! printf '%s' "$built" | grep -qF -- "${mod%%@*} ${mod#*@}"; then
+    if case "$built" in *"${mod%%@*} ${mod#*@}"*) false ;; *) true ;; esac; then
       echo "::error::the app did not say it was built with $mod (stderr.log above)"
       failed=1
     fi
@@ -91,10 +91,10 @@ if [ -n "$crashes" ]; then
     failed=1
   fi
 fi
-# (Listed whole, then searched: a search that stops at its first match closes the pipe on the
-# lister, and its "Broken pipe" was read here as the app having left.)
+# (Listed whole, then searched without a pipe: a search that stops at its first match closes the
+# pipe on whatever writes to it, and that "Broken pipe" was read here as the app having left.)
 services=$(xcrun simctl spawn "$device" launchctl list 2>/dev/null || true)
-if printf '%s' "$services" | grep -q "UIKitApplication:$bundle"; then
+if case "$services" in *"UIKitApplication:$bundle"*) true ;; *) false ;; esac; then
   echo 'The app is still running.'
 elif [ $simulator_stop = 1 ]; then
   echo "The app stopped at the Simulator's limit."

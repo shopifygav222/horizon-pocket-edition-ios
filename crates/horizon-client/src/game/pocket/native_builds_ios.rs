@@ -587,6 +587,7 @@ impl Game<'_> {
             .collect();
         let ids: Vec<String> = asked.iter().map(|id| (*id).to_owned()).collect();
         if !untaken.is_empty() {
+            let one = untaken.len() == 1;
             title(&mut game, "Can't be built");
             warning(
                 &mut game,
@@ -594,9 +595,9 @@ impl Game<'_> {
                     "{} can't be built into the app: {} in an older format, or {} the \
                      game's own code. Turn {} off, or use the catalog's version if it has one.",
                     listed(&untaken),
-                    if untaken.len() == 1 { "it is" } else { "they are" },
-                    if untaken.len() == 1 { "changes" } else { "change" },
-                    if untaken.len() == 1 { "it" } else { "them" }
+                    if one { "it is" } else { "they are" },
+                    if one { "changes" } else { "change" },
+                    if one { "it" } else { "them" }
                 ),
             );
         }
