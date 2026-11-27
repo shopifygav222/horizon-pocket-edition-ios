@@ -477,9 +477,7 @@ impl Game<'_> {
         let zoom = tc.zoom_held() && !in_menu && !editing && self.focused;
         if let Some(held_use) = tap {
             // Horizon PE: and with "Hitbox size" the creature the tap just misses.
-            if self.attack_finds_entity()
-                && self.using.is_none()
-                && self.screen == Screen::Playing
+            if self.attack_finds_entity() && self.using.is_none() && self.screen == Screen::Playing
             {
                 self.remote_start_attack();
             } else if !held_use && !rocket_boost {
