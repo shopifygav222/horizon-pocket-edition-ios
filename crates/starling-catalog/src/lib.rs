@@ -443,7 +443,8 @@ pub fn install(
     }
     let source = browser::source(project.source)
         .ok_or_else(|| format!("{} can't be installed from here.", project.title))?;
-    let entries = installed::install(source.as_ref(), project, everything, home, progress)?;
+    let entries = installed::install(source.as_ref(), project, everything, home, progress)
+        .map_err(|why| wasm_refusal(&project.title, why))?;
     Ok(match project.kind {
         Kind::ResourcePack => Done::ResourcePack,
         Kind::Shader => Done::ShaderPack,
@@ -455,6 +456,22 @@ pub fn install(
         }
         _ => Done::ContentMod,
     })
+}
+
+/// Horizon PE: why a mod whose code is WebAssembly was not installed on an iPhone, in the
+/// player's words. The package's own check says "mod.wasm is not a valid shared group member"
+/// (or another fault of its `mod.wasm`), which tells a player nothing; and no such mod runs in
+/// an iPhone app, whose system lets it run only the code it was installed with.
+fn wasm_refusal(title: &str, why: String) -> String {
+    if cfg!(target_os = "ios") && why.contains("mod.wasm") {
+        format!(
+            "{title} can't run on an iPhone: its code is WebAssembly, which an iPhone app is \
+             not allowed to run. A native version of it, if the catalog has one, can be built \
+             into the app."
+        )
+    } else {
+        why
+    }
 }
 
 /// The newest ZIP of a shader pack, preferring one made for the version the game plays.

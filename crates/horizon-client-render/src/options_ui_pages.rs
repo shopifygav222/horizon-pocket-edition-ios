@@ -134,7 +134,18 @@ impl OptionsUi {
                     Some(self.extra_button(s, crate::extras::Item::NoAi)),
                 )
             },
-            Row::Buttons(open("horizon.mods.browse", Page::ModBrowser), None),
+            // Horizon PE: on an iPhone the registry's own browser lists mods that can't run
+            // there (their code is WebAssembly, which an iPhone app may not run). Its mods are
+            // the catalog's, built into the app: Browse Mods opens the catalog.
+            Row::Buttons(
+                if cfg!(target_os = "ios") {
+                    let catalog = Act::OpenCatalog(CatalogShelf::Mods);
+                    button(0.0, 0.0, 150.0, tr("horizon.mods.browse"), catalog)
+                } else {
+                    open("horizon.mods.browse", Page::ModBrowser)
+                },
+                None,
+            ),
         ];
         self.added_entries(&mut rows);
         rows

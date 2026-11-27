@@ -145,6 +145,10 @@ pub fn main() {
     if let Err(e) = std::env::set_current_dir(&home) {
         eprintln!("Horizon: cannot enter {}: {e}", home.display());
     }
+    // Before the game makes a sound: music from another app plays on beside it.
+    if !horizon_gamecontroller::audio_session::play_beside_others() {
+        eprintln!("Horizon: the audio session is not shared: other apps' sound will stop");
+    }
     horizon_client::ios::install();
     horizon_protocol::install_system_srv_lookup(crate::dns::query_srv);
     horizon_client::ios::set_args(args);

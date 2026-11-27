@@ -40,6 +40,9 @@ pub struct Snapshot {
     pub triggers: [f32; 2],
 }
 
+/// Horizon PE: the game's sound beside other apps' (audio_session.rs).
+pub mod audio_session;
+
 #[cfg(target_os = "ios")]
 mod ios {
     use super::{Controller, Snapshot};
