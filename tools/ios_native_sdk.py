@@ -340,6 +340,39 @@ def survey(index: Path, report: Path) -> None:
     print(f"{taken} of {len(rows)} native mods are packages to compile")
 
 
+# What a package's code is named by: a content mod with any of it does not run on an iPhone, whose
+# apps run only the code they were installed with (WebAssembly needs a compiler at run time or an
+# interpreter the game does not carry there).
+CODE = (".wasm", ".so", ".dylib", ".dll", ".jar")
+
+
+def content(index: Path, report: Path) -> None:
+    """Which of the catalog's content mods (kind "mod") an iPhone runs: the ones whose package is
+    content alone. The index does not say which carry code, so each package is opened."""
+    data = json.loads(index.read_text(encoding="utf-8"))
+    listed = sorted((p for p in data["projects"] if p.get("kind") == "mod"), key=lambda p: p["id"])
+    rows = {}
+    for project in listed:
+        versions = project.get("versions") or []
+        if not versions:
+            continue
+        row = {"version": versions[0].get("version", "")}
+        try:
+            files = members(fetch(versions[0]["file"]))
+            code = sorted(name for name in files if name.lower().endswith(CODE))
+            if code:
+                row["refused"] = "it carries code an iPhone can't run: " + ", ".join(code[:3])
+        except Refused as why:
+            row["refused"] = str(why)
+        except Exception as error:  # A package that does not read is a mod nobody can install.
+            row["refused"] = f"its package does not read: {error}"
+        rows[project["id"]] = row
+        print(f"{project['id']} {row['version']}: {row.get('refused') or 'content alone'}", file=sys.stderr)
+    report.write_text(json.dumps(rows, indent=1) + "\n", encoding="utf-8")
+    runs = sum("refused" not in row for row in rows.values())
+    print(f"{runs} of {len(rows)} content mods are content alone")
+
+
 def add(index: Path, out: Path, wanted: list[str]) -> None:
     asked = []
     for item in wanted:
@@ -464,6 +497,8 @@ def main() -> None:
         add(Path(args[1]), Path(args[2]).resolve(), args[3:])
     elif len(args) == 3 and args[0] == "survey":
         survey(Path(args[1]), Path(args[2]).resolve())
+    elif len(args) == 3 and args[0] == "content":
+        content(Path(args[1]), Path(args[2]).resolve())
     elif len(args) == 2 and args[0] == "list":
         listing(Path(args[1]))
     elif len(args) == 2 and args[0] == "check":

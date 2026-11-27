@@ -76,6 +76,7 @@ pub fn search(
                 .filter(|p| p.support().installable())
                 .filter(|p| NATIVE_MODS_BUILD || !is_native_mod(p))
                 .filter(|p| !hidden_native_mod(p))
+                .filter(|p| !hidden_content_mod(p))
                 .skip(offset)
                 .take(limit)
                 .collect())
@@ -214,6 +215,25 @@ fn hidden_native_mod(project: &Project) -> bool {
             .get()
             .is_some_and(|ids| !ids.contains(&project.id)))
         && is_native_mod(project)
+}
+
+/// Horizon PE: where a game runs only the content mods it knows carry no code (iOS: a content
+/// mod's code is WebAssembly, which an iPhone app may not run): the ones the Mods shelf lists,
+/// every other left out.
+static ONLY_CONTENT_MODS: std::sync::OnceLock<HashSet<String>> = std::sync::OnceLock::new();
+
+/// Lists only the content mods `ids` on the Mods shelf. Only the first call counts.
+pub fn only_content_mods(ids: impl IntoIterator<Item = String>) {
+    let _ = ONLY_CONTENT_MODS.set(ids.into_iter().collect());
+}
+
+fn hidden_content_mod(project: &Project) -> bool {
+    project.source == SourceId::Horizon
+        && project.kind == Kind::Mod
+        && !is_native_mod(project)
+        && ONLY_CONTENT_MODS
+            .get()
+            .is_some_and(|ids| !ids.contains(&project.id))
 }
 
 /// Whether `project` is a native mod, which only runs once compiled into the game. The registry
