@@ -812,7 +812,11 @@ impl PackAtlas {
             body.insert_str(0, PULL_FLAT);
             body.push_str(FACE);
             body.push_str(
-                "    uint hz_quad = uint(gl_VertexIndex) / 4u;\n    \
+                // Horizon PE: the source's slot (`arena::write_sources`): a compact record's
+                // own, or a whole quad's first vertex's (`hz_qv`: `PULL_FLAT`'s vertex index).
+                // Starling read "vertex index / 4", which no record has, so compact terrain
+                // reached a pack without its blocks.
+                "    uint hz_quad = hz_qv >= 0x10000000u ? (hz_qv - 0x10000000u) >> 2u : hz_qv & ~3u;\n    \
                  uvec2 hz_source = uvec2(0u);\n    \
                  if (hz_quad < uint(hz_sources.length())) hz_source = hz_sources[hz_quad];\n    \
                  bool hz_known_source = (hz_source.y & 8192u) != 0u;\n    \
