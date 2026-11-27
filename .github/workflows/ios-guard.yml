@@ -102,7 +102,7 @@ jobs:
           # A phone's shader packs: terrain's depth pass and its two parts in one program
           # (Starling's fix after 0.9.0, which drew terrain without the pack).
           cargo test -p horizon-shaders --lib -- the_prepass_output_goes_past_the_varyings
-          cargo test -p horizon-client-render --lib -- auth:: android_controls keypad:: a_finger_scrolls_from_a_cycle_button_and_drags_a_slider an_ios_screen_reports_its_white_and_headroom hotbar_touch_is_generous_and_slides the_mods_pages_top_is_drawn_in_titled_parts the_native_game_page_says_which_game_runs
+          cargo test -p horizon-client-render --lib -- auth:: android_controls keypad:: a_finger_scrolls_from_a_cycle_button_and_drags_a_slider an_ios_screen_reports_its_white_and_headroom hotbar_touch_is_generous_and_slides the_mods_pages_top_is_drawn_in_titled_parts the_native_game_page_says_which_game_runs a_shader_pack_keeps_its_terrain_in_whole_vertices
           cargo test -p horizon-client-lib --lib -- ios_releases:: starling_releases:: preparer:: mod_builds:: catalog_page:: whats_new:: a_finger_scrolls_the_offers_both_ways the_fallback_index_parses
 
   android:
