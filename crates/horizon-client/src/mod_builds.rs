@@ -50,17 +50,53 @@ pub fn buildable() -> &'static std::collections::BTreeSet<String> {
             "https://raw.githubusercontent.com/{}/main/packaging/ios/catalog-buildable.json",
             crate::ios_releases::REPOSITORY
         );
-        ureq::AgentBuilder::new()
-            .timeout_connect(std::time::Duration::from_secs(10))
-            .timeout_read(std::time::Duration::from_secs(20))
-            .build()
-            .get(&url)
-            .call()
-            .ok()
-            .and_then(|response| response.into_string().ok())
+        fetched(&url)
             .and_then(|text| buildable_in(&text, Some(&engine)))
             .map_or(built_with, |(_, newer)| newer)
     })
+}
+
+/// A small file of the repository's, as text; None when it can't be had.
+fn fetched(url: &str) -> Option<String> {
+    ureq::AgentBuilder::new()
+        .timeout_connect(std::time::Duration::from_secs(10))
+        .timeout_read(std::time::Duration::from_secs(20))
+        .build()
+        .get(url)
+        .call()
+        .ok()
+        .and_then(|response| response.into_string().ok())
+}
+
+/// The catalog's content mods an iPhone runs, as the catalog-content-check workflow found
+/// them when the app was built (packaging/ios/catalog-content.json): each a package of content
+/// alone. A content mod may carry code as WebAssembly, which an iPhone app is not allowed to
+/// run, and the registry's index does not say which do.
+const CONTENT: &str = include_str!("../../../packaging/ios/catalog-content.json");
+
+/// The ids of the list `text`; None when it is not a list.
+fn content_in(text: &str) -> Option<std::collections::BTreeSet<String>> {
+    let list: serde_json::Value = serde_json::from_str(text).ok()?;
+    Some(list["mods"].as_object()?.keys().cloned().collect())
+}
+
+/// The catalog's content mods this app runs, by id: the repository's list (mods published since
+/// the app was built), else the one the app was built with, asked for once. None when neither
+/// reads: then nothing is known, and nothing is to be hidden for it. It blocks: the catalog asks
+/// from its search thread.
+pub fn runnable_content() -> Option<&'static std::collections::BTreeSet<String>> {
+    static LIST: std::sync::OnceLock<Option<std::collections::BTreeSet<String>>> =
+        std::sync::OnceLock::new();
+    LIST.get_or_init(|| {
+        let url = format!(
+            "https://raw.githubusercontent.com/{}/main/packaging/ios/catalog-content.json",
+            crate::ios_releases::REPOSITORY
+        );
+        fetched(&url)
+            .and_then(|text| content_in(&text))
+            .or_else(|| content_in(CONTENT))
+    })
+    .as_ref()
 }
 
 /// [`buildable`]'s list, once it was asked for.
@@ -332,6 +368,22 @@ mod tests {
         assert_ne!(again, "me");
         assert_eq!(device(&path), again);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The content mods the catalog offers on an iPhone are the ones without code: the list
+    /// the app carries reads, and the WebAssembly mods are not on it (a player was offered
+    /// Jade's and got "mod.wasm is not a valid shared group member").
+    #[test]
+    fn the_content_list_has_no_mod_with_code() {
+        let listed = content_in(CONTENT).expect("the list the app carries");
+        assert!(listed.len() >= 30, "{}", listed.len());
+        assert!(listed.contains("additional_lights"));
+        for code in ["jade_horizon", "clumps", "world_atlas", "speedometer"] {
+            assert!(!listed.contains(code), "{code}");
+        }
+        assert!(content_in("<html>").is_none());
+        assert!(content_in(r#"{"checked":"x"}"#).is_none());
+        assert_eq!(content_in(r#"{"mods":{}}"#).map(|l| l.len()), Some(0));
     }
 
     #[test]
