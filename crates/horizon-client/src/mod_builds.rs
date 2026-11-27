@@ -71,9 +71,8 @@ static LIST: std::sync::OnceLock<std::collections::BTreeSet<String>> = std::sync
 pub fn buildable_known() -> &'static std::collections::BTreeSet<String> {
     static OWN: std::sync::OnceLock<std::collections::BTreeSet<String>> =
         std::sync::OnceLock::new();
-    LIST.get().unwrap_or_else(|| {
-        OWN.get_or_init(|| buildable_in(BUILDABLE, None).unwrap_or_default().1)
-    })
+    LIST.get()
+        .unwrap_or_else(|| OWN.get_or_init(|| buildable_in(BUILDABLE, None).unwrap_or_default().1))
 }
 
 /// The most mods a build takes (the service's own limit is its to change; this is the app's).
