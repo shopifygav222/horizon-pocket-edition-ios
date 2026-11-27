@@ -114,7 +114,15 @@ impl Game<'_> {
         let card_w = (w - 48.0).min(CARD_W);
         let room = card_w - 2.0 * PAD - ITEM_INDENT;
         let mut lines = Vec::new();
-        for (heading, items) in [("New", notes.new), ("Fixed", notes.fixed)] {
+        let parts = [
+            ("Controls", notes.controls),
+            ("New", notes.new),
+            ("Fixed", notes.fixed),
+        ];
+        for (heading, items) in parts {
+            if items.is_empty() {
+                continue;
+            }
             if !lines.is_empty() {
                 lines.push(Line::Gap(14.0));
             }

@@ -278,7 +278,9 @@ impl Opt {
             Opt::TouchHotbarSize => "Hotbar size",
             Opt::TouchPlaceOneWay => "Hold Use builds one way",
             Opt::TouchHitboxScale => "Hitbox size",
-            Opt::TouchHitboxServers => "Wider hitboxes on servers",
+            // Short: with its "ON" or "OFF" it must fit a button of a pair (the first name,
+            // "Wider hitboxes on servers", was cut off on a phone).
+            Opt::TouchHitboxServers => "On servers too",
             Opt::TouchMouseSensitivity => "Virtual mouse sensitivity",
             Opt::TouchAnalog => "360-degree movement",
             Opt::TouchCircleSize => "Touch circle size",
@@ -722,7 +724,7 @@ impl Opt {
             }
             Opt::TouchHitboxServers => Some(
                 if s.touch.hitbox_on_servers {
-                    "ON (ban risk)"
+                    "ON"
                 } else {
                     "OFF"
                 }
@@ -4921,8 +4923,8 @@ impl OptionsUi {
                 rows.push(Row::Body(
                     "Above 100%, an attack that just misses a player or a creature still hits \
                      it. Your reach stays the same. It works in your own worlds. On a server it \
-                     works only with the switch on: a server can treat it as cheating and kick \
-                     or ban you, and one with anti-cheat may not count those hits at all."
+                     works only with \"On servers too\" on: a server can treat it as cheating \
+                     and kick or ban you, and one with anti-cheat may not count those hits."
                         .into(),
                     true,
                 ));

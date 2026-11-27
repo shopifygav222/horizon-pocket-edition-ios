@@ -11,8 +11,11 @@
 //!   headphones kept as headphones (A2DP): the game and the others' voices stay in full
 //!   quality there, and the iPhone's own microphone records. Only when the player chooses the
 //!   headset's microphone is the hands-free profile allowed, which lowers both.
-//! - Off the microphone, the session goes back to what the game always had (solo ambient: the
-//!   ring switch silences it), so listening alone changes nothing about the phone's sound.
+//! - Other apps' sound plays on (mix with others): a player's own music is not stopped by the
+//!   microphone going live, as it is not stopped by the game (`audio_session`).
+//! - Off the microphone, the session goes back to what the game has without it (ambient: the
+//!   ring switch silences it, other apps play on), so listening alone changes nothing about
+//!   the phone's sound.
 
 /// Whether the player lets the game use the microphone.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -263,6 +266,7 @@ mod ios {
     unsafe extern "C" {}
 
     // AVAudioSessionCategoryOptions.
+    const MIX_WITH_OTHERS: usize = 0x1;
     const ALLOW_BLUETOOTH: usize = 0x4;
     const DEFAULT_TO_SPEAKER: usize = 0x8;
     const ALLOW_BLUETOOTH_A2DP: usize = 0x20;
@@ -437,7 +441,7 @@ mod ios {
     pub fn begin_recording(choice: Choice) -> Result<(), String> {
         let session = session().ok_or("no audio session")?;
         // Bluetooth stays headphones (A2DP) unless its own microphone is asked for.
-        let mut options = DEFAULT_TO_SPEAKER | ALLOW_BLUETOOTH_A2DP;
+        let mut options = MIX_WITH_OTHERS | DEFAULT_TO_SPEAKER | ALLOW_BLUETOOTH_A2DP;
         if choice == Choice::Bluetooth {
             options |= ALLOW_BLUETOOTH;
         }
@@ -482,9 +486,9 @@ mod ios {
 
     pub fn end_recording() {
         if let Some(session) = session() {
-            // What an app that never set a category has: playing only, silenced by the ring
-            // switch.
-            set_category(&session, "AVAudioSessionCategorySoloAmbient", 0);
+            // What the game has without the microphone (`audio_session`): playing only,
+            // silenced by the ring switch, beside other apps' sound.
+            set_category(&session, "AVAudioSessionCategoryAmbient", 0);
         }
     }
 

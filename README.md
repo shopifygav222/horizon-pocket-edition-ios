@@ -98,11 +98,15 @@ accounts stay.
 **In the Control Hub** you can move, resize, recolour or hide any button, and change the button
 size, the hotbar size, the look sensitivity and the left-handed layout.
 
-**Hitbox size** (Options > Touch, from 1.1.1) makes fighting with a thumb easier: above 100%, an
-attack that just misses a player or a creature still hits it. It is off until you raise it, and
-your reach stays the same. It works in your own worlds. On a server it works only if you also turn
-on **Wider hitboxes on servers**: a server can treat it as cheating and kick or ban you, and one
-with anti-cheat may not count those hits at all. That risk is yours to take.
+**Hitbox size** (Options > Controls > Touch, from 1.1.1) makes fighting with a thumb easier: raise
+it above 100% (up to 225%) and an attack that just misses a player or a creature still hits it. It
+is off until you raise it, and your reach stays the same. It works in your own worlds. On a server
+it works only if you also turn on **On servers too**, beside it: a server can treat it as cheating
+and kick or ban you, and one with anti-cheat may not count those hits at all. That risk is yours
+to take.
+
+**Your own music keeps playing** (from 1.1.1): start it in another app, then open the game. The
+game's sliders in Options > Music & Sounds set how loud the game is beside it.
 
 A controller, keyboard or mouse works as soon as you use it; the touch controls step aside.
 

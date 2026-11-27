@@ -8,6 +8,9 @@
 #[derive(Debug, PartialEq, Eq)]
 pub struct Notes {
     pub version: &'static str,
+    /// How the touch controls are played now, said first: what a player must know to enjoy
+    /// them. None where a release changed nothing about them.
+    pub controls: &'static [&'static str],
     pub new: &'static [&'static str],
     pub fixed: &'static [&'static str],
 }
@@ -15,16 +18,21 @@ pub struct Notes {
 const NOTES: &[Notes] = &[
     Notes {
         version: "1.1.1",
+        // 1.1.0 came out the day before: its controls and its news are said again here, for
+        // whoever went from 1.0.0 straight to this one.
+        controls: &[
+            "Hold Attack to keep hitting. No tapping: it hits each time your weapon is ready.",
+            "Hold Use to keep placing. Blocks go the same way, so a bridge stays straight.",
+            "Hitbox size: raise it and a near miss still hits. Options > Controls > Touch.",
+        ],
         new: &[
-            "Hitbox size (Options > Touch): an attack that just misses still hits.",
-            "It is off until you raise it. On servers it has its own switch and warning.",
-            "All of 1.1.0 too: the newer engine, hold to attack, mods built into the app.",
+            "Your own music keeps playing while you play.",
+            "A much newer game engine, and a bigger hotbar you can slide along.",
+            "A Catalog button for mods, shaders and packs. Mods are built into the app.",
         ],
         fixed: &[
-            "The title screen says when your mods build is downloading and when it is ready.",
-            "A mod that can't be built into the app is said so before a build starts.",
-            "A build that found no free machine is started again by itself.",
             "Leaves and plants wave again with a shader pack.",
+            "The mods button on the title screen follows a build to its end.",
         ],
     },
     NOTES_1_1_0,
@@ -32,6 +40,7 @@ const NOTES: &[Notes] = &[
 
 const NOTES_1_1_0: Notes = Notes {
     version: "1.1.0",
+    controls: &[],
     new: &[
         "The game engine is over 31,000 changes newer (Starling 0.8 to 0.9).",
         "Hold Attack on a monster: no tapping, it hits each time your weapon is ready.",
@@ -82,11 +91,12 @@ mod tests {
     fn the_notes_are_short() {
         for notes in NOTES {
             assert!(!notes.new.is_empty() && !notes.fixed.is_empty());
-            assert!(
-                notes.new.len() + notes.fixed.len() <= 10,
-                "a card, not a page"
-            );
-            for line in notes.new.iter().chain(notes.fixed) {
+            // A heading costs a line and a half: the card is no taller with three of them.
+            let headings = if notes.controls.is_empty() { 2 } else { 3 };
+            let lines = notes.controls.len() + notes.new.len() + notes.fixed.len();
+            assert!(lines + 2 * headings <= 14, "a card, not a page");
+            let all = notes.controls.iter().chain(notes.new).chain(notes.fixed);
+            for line in all {
                 assert!(line.chars().count() <= 80, "{line}");
                 assert!(line.ends_with('.'), "{line}");
             }
