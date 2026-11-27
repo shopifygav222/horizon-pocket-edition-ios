@@ -26,7 +26,14 @@ function store() {
 
 /// GitHub's API for one repository: its artifacts, its workflow's runs, and what was asked of it.
 /// `buildable`: the repository's list of the mods a build can take (none: the file can't be read).
-function github({ artifacts = [], runs = [], jobs = {}, dispatch = 204, buildable = null } = {}) {
+function github({
+  artifacts = [],
+  runs = [],
+  jobs = {},
+  dispatch = 204,
+  buildable = null,
+  rerun = 201,
+} = {}) {
   const asked = [];
   const lists = [];
   const fetcher = async (url, init = {}) => {
@@ -53,6 +60,10 @@ function github({ artifacts = [], runs = [], jobs = {}, dispatch = 204, buildabl
     }
     if (pathname === `${base}/workflows/${WORKFLOW}/dispatches`) {
       return new Response(null, { status: dispatch });
+    }
+    if (/\/runs\/\d+\/rerun-failed-jobs$/.test(pathname)) {
+      assert.equal(init.method, "POST");
+      return new Response(null, { status: rerun });
     }
     const job = /\/runs\/(\d+)\/jobs$/.exec(pathname);
     if (job) return Response.json({ jobs: jobs[job[1]] ?? [] });
@@ -230,6 +241,67 @@ test("a failed build says where it failed and waits an hour", async () => {
   const retried = await handle(asking(), env(), old.fetcher, NOW);
   assert.equal(retried.status, 202);
   assert.equal(old.asked.filter((a) => a.method === "POST").length, 1);
+});
+
+test("a build GitHub had no machine for is started again, a few times", async () => {
+  const key = await buildKey(TAG, ["appleskin@3.0.1", "waymap@1.2.0"]);
+  // As GitHub lists it: the run failed, its build job cancelled with no step ever run.
+  const unstarted = (more = {}, most = {}) =>
+    github({
+      runs: [
+        {
+          id: 9,
+          display_title: `mod-build ${key}`,
+          status: "completed",
+          conclusion: "failure",
+          run_attempt: 1,
+          updated_at: "2026-11-24T11:40:00Z",
+          ...more,
+        },
+      ],
+      jobs: {
+        9: [
+          { conclusion: "success", steps: [{ name: "Check the request", conclusion: "success" }] },
+          { conclusion: "cancelled", steps: [] },
+          { conclusion: "skipped", steps: [] },
+        ],
+      },
+      ...most,
+    });
+  const reruns = (g) => g.asked.filter((a) => a.pathname.endsWith("/rerun-failed-jobs")).length;
+  // The app that waits reads the state: that starts the same run again, once, and counts for
+  // nobody's day.
+  const first = unstarted();
+  const e = env();
+  const read = await handle(get(`/v1/build/${key}`), e, first.fetcher, NOW);
+  assert.deepEqual(await read.json(), { key, state: "queued" });
+  assert.equal(reruns(first), 1);
+  const again = await handle(get(`/v1/build/${key}`), e, first.fetcher, NOW);
+  assert.deepEqual(await again.json(), { key, state: "queued" });
+  const asked = await handle(asking(), e, first.fetcher, NOW);
+  assert.equal((await asked.json()).state, "queued");
+  assert.equal(reruns(first), 1);
+  assert.deepEqual([...e.LIMITS.map.keys()], [`r:${key}`]);
+  assert.equal(first.asked.filter((a) => a.pathname.endsWith("/dispatches")).length, 0);
+  // The third try was the last: then it failed, and says what it was.
+  const last = unstarted({ run_attempt: 3 });
+  const told = await handle(get(`/v1/build/${key}`), env(), last.fetcher, NOW);
+  assert.deepEqual(await told.json(), {
+    key,
+    state: "failed",
+    since: "2026-11-24T11:40:00Z",
+    reason: "GitHub had no machine free for the build.",
+  });
+  assert.equal(reruns(last), 0);
+  // A run cancelled by hand stays cancelled, and so does one GitHub won't start again.
+  const byHand = unstarted({ conclusion: "cancelled" });
+  const left = await handle(get(`/v1/build/${key}`), env(), byHand.fetcher, NOW);
+  assert.equal((await left.json()).state, "failed");
+  assert.equal(reruns(byHand), 0);
+  const refused = unstarted({}, { rerun: 403 });
+  const kept = await handle(get(`/v1/build/${key}`), env(), refused.fetcher, NOW);
+  assert.equal((await kept.json()).state, "failed");
+  // A build that failed at a step is not started again by itself (the test above).
 });
 
 test("a device and a day have only so many builds", async () => {

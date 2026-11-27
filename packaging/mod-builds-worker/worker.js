@@ -33,6 +33,8 @@ const STARTED_TTL = 180;
 // The catalog's mods a build can take (the repository's packaging/ios/catalog-buildable.json, on
 // its main branch): read at most this often.
 const BUILDABLE_FRESH_MS = 10 * 60 * 1000;
+// A build GitHub found no machine for is started again by itself, this many times in all.
+const MOST_ATTEMPTS = 3;
 /// The lists read, by repository: { at, ids }.
 export const buildableLists = new Map();
 
@@ -152,20 +154,29 @@ async function run(api, key) {
   return runs.find((r) => r.display_title === `mod-build ${key}`) ?? null;
 }
 
-/// Why a run failed, in a line: the step that stopped it.
+/// Why a run failed, in a line: the step that stopped it. `unstarted`: no step failed and a job
+/// was given up before any machine took it (GitHub's Macs were all busy: it cancels such a job
+/// after a while), which is no fault of the mods.
 async function failure(api, id) {
+  const plain = { reason: "The build failed.", unstarted: false };
   try {
     const response = await api(`/actions/runs/${id}/jobs?per_page=30`);
-    if (!response.ok) return "The build failed.";
+    if (!response.ok) return plain;
     const { jobs = [] } = await response.json();
     for (const job of jobs) {
       const step = (job.steps ?? []).find((s) => s.conclusion === "failure");
-      if (step) return `The build failed at: ${step.name}.`;
+      if (step) return { reason: `The build failed at: ${step.name}.`, unstarted: false };
+    }
+    const never = (j) => j.conclusion === "cancelled" && (j.steps ?? []).length === 0;
+    if (jobs.some(never)) {
+      return { reason: "GitHub had no machine free for the build.", unstarted: true };
     }
     const job = jobs.find((j) => j.conclusion && j.conclusion !== "success");
-    return job ? `The build ${job.conclusion.replace("_", " ")}.` : "The build failed.";
+    return job
+      ? { reason: `The build ${job.conclusion.replace("_", " ")}.`, unstarted: false }
+      : plain;
   } catch {
-    return "The build failed.";
+    return plain;
   }
 }
 
@@ -184,12 +195,25 @@ export async function state(api, kv, key) {
     };
   }
   if (latest && latest.conclusion !== "success") {
-    return {
-      key,
-      state: "failed",
-      since: latest.updated_at,
-      reason: await failure(api, latest.id),
-    };
+    const why = await failure(api, latest.id);
+    // A build no machine took is started again, the same run: whoever asks next (the app that
+    // waits for it reads its state every little while) sets it going, a few times at most. A
+    // run someone cancelled by hand is left alone.
+    if (
+      kv &&
+      why.unstarted &&
+      latest.conclusion === "failure" &&
+      (latest.run_attempt ?? 1) < MOST_ATTEMPTS
+    ) {
+      // GitHub lists the run as queued a moment after it is asked to: meanwhile it is remembered.
+      if (await kv.get(`r:${key}`)) return { key, state: "queued" };
+      const again = await api(`/actions/runs/${latest.id}/rerun-failed-jobs`, { method: "POST" });
+      if (again.ok) {
+        await kv.put(`r:${key}`, "1", { expirationTtl: STARTED_TTL });
+        return { key, state: "queued" };
+      }
+    }
+    return { key, state: "failed", since: latest.updated_at, reason: why.reason };
   }
   // Asked for a moment ago, not listed yet.
   if (kv && (await kv.get(`k:${key}`))) return { key, state: "queued" };

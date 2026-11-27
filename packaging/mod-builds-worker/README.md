@@ -61,6 +61,7 @@ itself starts. An app built before it shows no Build button and says it has no b
 | "This device has started 6 builds today" | The daily limit; tomorrow there are more |
 | "... can't be built into the app" | That mod changes the game's own code, which no build from the catalog does. Turn it off on the Mods page and build again |
 | "The build failed at: ..." | The build itself failed. It is on this repository's **Actions** page, under **mod-build** |
+| "GitHub had no machine free for the build" | GitHub's Macs were all busy, three times in a row (the service starts such a build again by itself twice). Build again later |
 
 To turn the service off, delete the Worker in Cloudflare's dashboard and delete the token on
 GitHub. The game then says the service can't be reached; nothing else changes.
