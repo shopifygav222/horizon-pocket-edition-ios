@@ -387,11 +387,11 @@ impl Arena {
                     uploads.buffer(encoder, buffer, start * 8, bytemuck::cast_slice(sources));
                 } else if apart == 4 && quads == vertices / 4 {
                     // Each at its quad's first slot; the three after it stay unknown.
-                    let mut spaced =
-                        vec![crate::mesher::TerrainSource::default(); sources.len() * 4];
-                    for (slots, source) in spaced.chunks_exact_mut(4).zip(sources) {
-                        slots[0] = *source;
-                    }
+                    let unknown = crate::mesher::TerrainSource::default();
+                    let spaced: Vec<_> = sources
+                        .iter()
+                        .flat_map(|&source| [source, unknown, unknown, unknown])
+                        .collect();
                     uploads.buffer(encoder, buffer, start * 8, bytemuck::cast_slice(&spaced));
                 }
             }

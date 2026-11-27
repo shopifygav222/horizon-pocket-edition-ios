@@ -451,13 +451,16 @@ fn compact_records_keep_each_quads_block() {
     let sources =
         blocks.map(|(state, cell, light, fluid)| TerrainSource::new(state, cell, light, fluid));
     // The pack's ids of five states: 100 and up as a model, 200 and up as a fluid.
-    let table: Vec<i32> = (0..5).flat_map(|state| [100 + state, 200 + state]).collect();
+    let table: Vec<i32> = (0..5)
+        .flat_map(|state| [100 + state, 200 + state])
+        .collect();
     // One source a slot, at its quad's first: every fourth among whole vertices, the first
     // slots (the records, in the quads' order) of the compact layout.
-    let mut wide_sources = vec![TerrainSource::default(); solid.len()];
-    for (slots, source) in wide_sources.chunks_exact_mut(4).zip(&sources) {
-        slots[0] = *source;
-    }
+    let unknown = TerrainSource::default();
+    let wide_sources: Vec<_> = sources
+        .iter()
+        .flat_map(|&source| [source, unknown, unknown, unknown])
+        .collect();
     let mut compact_sources = vec![TerrainSource::default(); records.len()];
     compact_sources[..sources.len()].copy_from_slice(&sources);
     let origin = f32::from_bits((1. / UV_STEPS).to_bits());
