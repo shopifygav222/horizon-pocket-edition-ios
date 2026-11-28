@@ -1,0 +1,154 @@
+name: mod-builder-check
+# The mod builder's own test (mod-builder.yml, tools/ci/mod_builder.py, docs/ios.md "The mod
+# builder"): that a game compiled once is taken back by another machine and compiles only the mods.
+# On Linux, with the game's library for the desktop standing in for the iPhone's program: the
+# mechanism is Cargo's and the builder's file times, the same on every system, and a Linux machine
+# is there at once where a Mac is waited for.
+#
+#   unit   the tool's own tests, and that ios.yml is still the file the builder was read against
+#   base   the game compiled from a checkout whose files got the fixed time; kept as an artifact
+#   reuse  on a fresh machine and a fresh checkout:
+#            1. the same build compiles nothing
+#            2. with a catalog mod added, it compiles the mod and nothing of the game
+#            3. with one line of the game changed, it compiles the game again (a changed file is
+#               never taken for an unchanged one)
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, "mod-builder-**"]
+    paths:
+      - .github/workflows/mod-builder-check.yml
+      - .github/workflows/mod-builder.yml
+      - .github/workflows/ios.yml
+      - tools/ci/mod_builder.py
+      - tools/ios_native_sdk.py
+permissions:
+  contents: read
+concurrency:
+  group: mod-builder-check-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  HORIZON_TELEMETRY_URL: "off"
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: never
+  # No debug information: the test is what gets compiled, not the program.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  # The game's library, as the iPhone's program depends on it.
+  GAME: -p horizon-client --lib --features horizon-client/horizon-extras
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: python3 tools/ci/mod_builder.py --self-test
+
+  base:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install Rust and the headers the client needs
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev zstd
+          bash tools/ci/rustup_install.sh --profile minimal
+      - name: Give the source the fixed time
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/base"
+          python3 tools/ci/mod_builder.py identity "$RUNNER_TEMP/base/identity.json"
+          python3 tools/ci/mod_builder.py snapshot . "$RUNNER_TEMP/base/manifest.json"
+      - name: Compile the game
+        run: |
+          set -euo pipefail
+          cargo fetch
+          # shellcheck disable=SC2086 # GAME is cargo's arguments
+          cargo build -v $GAME 2>&1 | python3 tools/ci/mod_builder.py log "$RUNNER_TEMP/build.log"
+          python3 tools/ci/mod_builder.py summary "$RUNNER_TEMP/build.log" "The game, from nothing"
+      - name: Keep the compiled game
+        run: |
+          set -euo pipefail
+          cp Cargo.lock "$RUNNER_TEMP/base/Cargo.lock"
+          du -sh target "$HOME/.cargo/registry"
+          python3 tools/ci/mod_builder.py pack "$RUNNER_TEMP/base" --target target --cargo-home "$HOME/.cargo"
+          ls -l "$RUNNER_TEMP/base"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mod-builder-check-base
+          path: ${{ runner.temp }}/base/
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
+
+  reuse:
+    needs: base
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install Rust and the headers the client needs
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev zstd
+          bash tools/ci/rustup_install.sh --profile minimal
+      - uses: actions/download-artifact@v4
+        with:
+          name: mod-builder-check-base
+          path: ${{ runner.temp }}/base
+      - name: Take the compiled game
+        run: |
+          set -euo pipefail
+          python3 tools/ci/mod_builder.py identity "$RUNNER_TEMP/identity.json"
+          python3 tools/ci/mod_builder.py same "$RUNNER_TEMP/base/identity.json" "$RUNNER_TEMP/identity.json"
+          python3 tools/ci/mod_builder.py unpack "$RUNNER_TEMP/base" --target target --cargo-home "$HOME/.cargo"
+          rm -f "$RUNNER_TEMP"/base/*.tar.*
+          python3 tools/ci/mod_builder.py restore . "$RUNNER_TEMP/base/manifest.json"
+      - name: The same build compiles nothing
+        run: |
+          set -euo pipefail
+          cargo fetch
+          # shellcheck disable=SC2086
+          cargo build -v $GAME 2>&1 | python3 tools/ci/mod_builder.py log "$RUNNER_TEMP/same.log"
+          python3 tools/ci/mod_builder.py summary "$RUNNER_TEMP/same.log" "The game again, from the compiled game" --strict
+      - name: With a mod, only the mod is compiled
+        run: |
+          set -euo pipefail -f
+          mod=$(python3 -c 'import json; m = json.load(open("packaging/ios/catalog-buildable.json"))["mods"]; i = sorted(m)[0]; print(i + "@" + m[i])')
+          # Horizon's registry, else this port's copy of its index (packaging/ios/registry).
+          curl -fsSL --retry 3 https://horizon-rust.github.io/horizon-mods/index.json -o "$RUNNER_TEMP/index.json" \
+            || cp packaging/ios/registry/index.json "$RUNNER_TEMP/index.json"
+          python3 tools/ios_native_sdk.py add "$RUNNER_TEMP/index.json" "$RUNNER_TEMP/catalog" "$mod"
+          cargo fetch
+          python3 tools/ci/mod_builder.py lock "$RUNNER_TEMP/base/Cargo.lock" Cargo.lock | tee "$RUNNER_TEMP/lock.txt"
+          grep -qx 'lock=same' "$RUNNER_TEMP/lock.txt" || { echo "::error::$mod changes the game's own packages"; exit 1; }
+          # shellcheck disable=SC2086
+          cargo build -v $GAME -p "hmod-${mod%@*}" 2>&1 | python3 tools/ci/mod_builder.py log "$RUNNER_TEMP/mod.log"
+          python3 tools/ci/mod_builder.py summary "$RUNNER_TEMP/mod.log" "The game with $mod" --allow 'hmod-.*' --strict
+          grep -q "Compiling hmod-${mod%@*} " "$RUNNER_TEMP/mod.log" || { echo "::error::the mod was not compiled"; exit 1; }
+      - name: A changed file of the game is compiled again
+        run: |
+          set -euo pipefail
+          echo '// mod-builder-check: one more line' >> crates/horizon-world/src/lib.rs
+          python3 tools/ci/mod_builder.py restore . "$RUNNER_TEMP/base/manifest.json" | tee "$RUNNER_TEMP/restore.txt"
+          grep -q 'changed: crates/horizon-world/src/lib.rs' "$RUNNER_TEMP/restore.txt" \
+            || { echo '::error::the changed file was taken for the compiled game'"'"'s own'; exit 1; }
+          cargo build -v -p horizon-world 2>&1 | python3 tools/ci/mod_builder.py log "$RUNNER_TEMP/changed.log"
+          python3 tools/ci/mod_builder.py summary "$RUNNER_TEMP/changed.log" "The game's world crate, with one line changed"
+          grep -q 'Compiling horizon-world ' "$RUNNER_TEMP/changed.log" \
+            || { echo '::error::a changed file was not compiled again'; exit 1; }
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: mod-builder-check-logs
+          path: |
+            ${{ runner.temp }}/same.log
+            ${{ runner.temp }}/mod.log
+            ${{ runner.temp }}/changed.log
+          retention-days: 7
+          if-no-files-found: ignore

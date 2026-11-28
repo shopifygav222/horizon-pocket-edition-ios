@@ -1,0 +1,585 @@
+name: mod-builder
+run-name: ${{ inputs.serve && format('mod-build {0}', inputs.key) || format('mod-builder trial · {0} · {1}', inputs.tag, inputs.mods) }}
+# The app with catalog mods compiled in, without compiling the game each time (docs/ios.md "The mod
+# builder"). mod-build.yml builds a release with mods by compiling everything, half an hour and
+# more of a Mac, for a few small crates. This workflow compiles a release's game once, keeps what
+# Cargo made of it as an artifact (`game-base-<commit>-<recipe>`: Cargo's target folder, the
+# registry crates it read, the app bundle without mods), and every later build of that release
+# takes it back and compiles only the mods and the program that names them.
+#
+# It is started on a branch (main) and told which release to build: the release's own source is
+# checked out, at its tag, and built with the release's own tools; only these steps and
+# tools/ci/mod_builder.py are this branch's. So a release that is already out is built this way
+# too. The steps of a build from nothing are ios.yml's `ipa` job's: tools/ci/mod_builder.py's
+# self-test fails when ios.yml changes, until this file was read against it.
+#
+# What makes it safe (tools/ci/mod_builder.py says how, mod-builder-check.yml tests it):
+#   - A file counts as unchanged only by its bytes. Whatever differs from what the kept game was
+#     compiled from is compiled again by Cargo, as in a build from nothing.
+#   - A kept game is taken only if this workflow made it, in this repository, started by hand or by
+#     the service (never by a pull request), with the same compiler, Xcode and settings.
+#   - Without one, or with any doubt, the game is compiled from nothing, as mod-build.yml does, and
+#     kept for the next build.
+#
+# A trial (the default): the .ipa is kept as `mod-trial-<key>`, which nothing hands to a player.
+# Only with `serve`, which the mod builds service sets, is it `mod-build-<key>`, the name the
+# service finds a build by, and the run named as the service looks for it.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "The release to build: its tag (v1.1.1, v1.1.1-shared-worlds, v1.1.1-shared-worlds-mods)"
+        type: string
+        required: true
+      mods:
+        description: "Catalog mods, id@version separated by commas (zoom@1.0.0,gamma@1.2.0)"
+        type: string
+        required: true
+      key:
+        description: The build's key, as the mod builds service computes it; empty to compute it here
+        type: string
+        default: ""
+      serve:
+        description: Name the build as the mod builds service hands it to players (the service sets this; a trial does not)
+        type: boolean
+        default: false
+      compare:
+        description: "Trial: an artifact to compare this build with (mod-build-<key>, the same release and mods built by mod-build.yml)"
+        type: string
+        default: ""
+      fresh:
+        description: "Trial: compile the game from nothing, whatever is kept"
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  # The same request asked twice is built once: the second waits and finds the first's file. A
+  # trial is a group of its own.
+  group: mod-builder-${{ inputs.serve && inputs.key || github.run_id }}
+  cancel-in-progress: false
+env:
+  # ios.yml's, with the release's own name where that workflow has the name of what it runs on.
+  HORIZON_TELEMETRY_URL: "off"
+  CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+  CARGO_PROFILE_RELEASE_LTO: "false"
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: never
+  IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+  HORIZON_IOS_REPO: ${{ github.repository }}
+  HORIZON_IOS_BRANCH: ${{ inputs.tag }}
+  HORIZON_MOD_BUILDS_URL: ${{ vars.HORIZON_MOD_BUILDS_URL }}
+  # The kept game's format. Raise it when this workflow keeps or takes one differently: every
+  # release's game is then compiled once more. Off main, a branch's own (a test's).
+  RECIPE: ${{ github.ref_name == 'main' && 'r1' || format('r1-{0}', github.ref_name) }}
+
+jobs:
+  check:
+    name: Check the request
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      key: ${{ steps.request.outputs.key }}
+      mods: ${{ steps.request.outputs.mods }}
+      built_in: ${{ steps.request.outputs.built_in }}
+      done: ${{ steps.request.outputs.done }}
+      sha: ${{ steps.request.outputs.sha }}
+      base: ${{ steps.request.outputs.base }}
+      artifact: ${{ steps.request.outputs.artifact }}
+    steps:
+      # Before anything is fetched: the tag names what is checked out.
+      - name: Check the release's name
+        env:
+          TAG: ${{ inputs.tag }}
+          COMPARE: ${{ inputs.compare }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}(-shared-worlds(-mods)?)?$ ]] \
+            || { echo "::error::a mod build is made of a release, and $TAG is not a release's tag"; exit 1; }
+          [[ -z "$COMPARE" || "$COMPARE" =~ ^mod-build-[0-9a-f]{24}$ ]] \
+            || { echo "::error::$COMPARE is not a build's artifact"; exit 1; }
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          persist-credentials: false
+      - name: Check the request
+        id: request
+        env:
+          TAG: ${{ inputs.tag }}
+          MODS: ${{ inputs.mods }}
+          KEY: ${{ inputs.key }}
+          SERVE: ${{ inputs.serve }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ "$SERVE" = true ] && [ -z "$KEY" ]; then
+            echo '::error::a build for players is asked for with its key'
+            exit 1
+          fi
+          # The release's own tools read the request (tools/mod_build_key.py, as mod-build.yml).
+          if [ -n "$KEY" ]; then
+            python3 tools/mod_build_key.py "$TAG" "$MODS" "$KEY" > request.txt
+          else
+            python3 tools/mod_build_key.py "$TAG" "$MODS" > request.txt
+          fi
+          key=$(head -n 1 request.txt)
+          # The mods as the key has them: sorted, one version an id.
+          mods=$(tail -n +2 request.txt | sed 's/ /@/' | paste -sd, -)
+          # The catalog has each of them, as native mods a build can take (their files are fetched
+          # and read by the build itself; here only the catalog's list).
+          # Horizon's registry, else this port's copy of its index (packaging/ios/registry).
+          curl -fsSL --retry 3 https://horizon-rust.github.io/horizon-mods/index.json -o index.json \
+            || cp packaging/ios/registry/index.json index.json
+          while read -r id version; do
+            python3 - "$id" "$version" index.json <<'PY'
+          import json, sys
+          mod, version, index = sys.argv[1:]
+          projects = {p["id"]: p for p in json.load(open(index, encoding="utf-8"))["projects"] if p.get("kind") == "native-mod"}
+          if mod not in projects:
+              sys.exit(f"::error::{mod} is not a native mod of the catalog")
+          if version not in [v.get("version") for v in projects[mod].get("versions", [])]:
+              sys.exit(f"::error::the catalog has no {mod} {version}")
+          PY
+          done < <(tail -n +2 request.txt)
+          # The mods this edition is always built with (the Mods edition's), in the old format.
+          built_in=""
+          if [ -f native-mods/built-in.txt ]; then
+            built_in=$(grep -v '^#' native-mods/built-in.txt | tr -s ' \n' ' ' | sed 's/^ *//; s/ *$//')
+          fi
+          # A trial's file is not a player's: another name, and built every time.
+          artifact="mod-trial-$key"
+          done=false
+          if [ "$SERVE" = true ]; then
+            artifact="mod-build-$key"
+            # Built already and still kept: nothing to do (the same request, asked again).
+            if gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=$artifact&per_page=10" \
+                 --jq '[.artifacts[] | select(.expired | not)] | length' | grep -qv '^0$'; then
+              done=true
+              echo "::notice::$artifact is built already"
+            fi
+          fi
+          sha=$(git rev-parse HEAD)
+          {
+            echo "key=$key"
+            echo "mods=$mods"
+            echo "built_in=$built_in"
+            echo "done=$done"
+            echo "sha=$sha"
+            echo "base=game-base-${sha:0:12}-${RECIPE//[^A-Za-z0-9._-]/-}"
+            echo "artifact=$artifact"
+          } >> "$GITHUB_OUTPUT"
+          echo "::notice::build $key of $TAG (${sha:0:12}) with $mods${built_in:+ (and $built_in)} as $artifact"
+
+  # ios.yml's `stage`, at the release: the older-format native mods (the Mods edition's fifteen)
+  # applied to the source, on Linux.
+  stage:
+    needs: check
+    if: ${{ needs.check.outputs.built_in != '' && needs.check.outputs.done != 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check.outputs.sha }}
+          persist-credentials: false
+      # First, so a mod id that isn't one stops the run in seconds.
+      - name: Fetch and check the native mods
+        env:
+          MODS: ${{ needs.check.outputs.built_in }}
+        run: |
+          set -euo pipefail -f
+          # The registry is asked only for a mod that is not in native-mods/: without it, those are all there are.
+          curl -fsSL --retry 3 https://horizon-rust.github.io/horizon-mods/index.json -o "$RUNNER_TEMP/index.json" \
+            || cp packaging/ios/registry/index.json "$RUNNER_TEMP/index.json"
+          python3 tools/ios_native_mods.py fetch "$RUNNER_TEMP/index.json" "$RUNNER_TEMP/native" ${MODS//,/ }
+          python3 tools/ios_native_mods.py info "$RUNNER_TEMP/native" "$(git rev-parse HEAD)" > "$RUNNER_TEMP/native-mods.json"
+      - name: Install Rust
+        run: bash tools/ci/rustup_install.sh --profile minimal
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: native-mods-check
+          save-if: false
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/starling-native
+          key: native-mixins-${{ runner.os }}-${{ hashFiles('packaging/android/native_build.sh') }}
+      - name: The kept tool, when the cache has none
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          rev=$(sed -n 's/^MIXINS_REV=\([0-9a-f]\{40\}\)$/\1/p' packaging/android/native_build.sh)
+          tool=$HOME/.cache/starling-native/mixins-${rev:0:12}/bin/horizon-mixins
+          if [ -x "$tool" ]; then
+            echo "horizon-mixins is in the cache"
+            exit 0
+          fi
+          run=$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=horizon-mixins-kept&per_page=20" \
+            --jq '[.artifacts[] | select(.expired | not)][0].workflow_run.id // empty')
+          if [ -n "$run" ]; then
+            gh run download "$run" --repo "$GITHUB_REPOSITORY" --name horizon-mixins-kept --dir "$RUNNER_TEMP/kept"
+            mkdir -p "$HOME/.cache"
+            tar -C "$HOME/.cache" -xzf "$RUNNER_TEMP/kept/starling-native-linux-x64.tar.gz"
+          fi
+          if [ -x "$tool" ]; then
+            echo "::notice::horizon-mixins ${rev:0:12} taken from what native-tool-keep kept"
+          else
+            echo "::warning::no kept horizon-mixins ${rev:0:12}: it is built from Horizon's repository"
+          fi
+      - name: Apply the native mods to the source
+        run: |
+          set -euo pipefail
+          bash packaging/ios/native_stage.sh . "$RUNNER_TEMP/native/bundles" 2>&1 | tee "$RUNNER_TEMP/native-stage.log"
+          mkdir -p "$RUNNER_TEMP/staged"
+          python3 tools/ios_native_mods.py names "$RUNNER_TEMP/native" > "$RUNNER_TEMP/staged/names.txt"
+          echo "::notice::built with $(cat "$RUNNER_TEMP/staged/names.txt")"
+          cp "$RUNNER_TEMP/native-mods.json" "$RUNNER_TEMP/staged/native-mods.json"
+          cp "$RUNNER_TEMP/native-stage.log" "$RUNNER_TEMP/staged/native-stage.log"
+          tar --exclude=./.git --exclude=./target -czf "$RUNNER_TEMP/staged/staged-source.tar.gz" .
+          ls -l "$RUNNER_TEMP/staged"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: staged-source
+          path: ${{ runner.temp }}/staged/
+          retention-days: 1
+          if-no-files-found: error
+
+  ipa:
+    name: Build the app
+    needs: [check, stage]
+    if: ${{ !cancelled() && needs.check.result == 'success' && needs.check.outputs.done != 'true' && (needs.stage.result == 'success' || needs.stage.result == 'skipped') }}
+    runs-on: macos-26
+    timeout-minutes: 240
+    permissions:
+      contents: read
+      # The kept game is looked for among the artifacts.
+      actions: read
+    env:
+      IOS_TARGET: aarch64-apple-ios
+      # A build for others: no developer launch arguments (main.rs PUBLIC_BUILD).
+      HORIZON_IOS_PUBLIC: "1"
+      # The Microsoft sign-in app (shared/account.rs): a repository variable, else the built-in one.
+      HORIZON_MSA_CLIENT_ID: ${{ vars.HORIZON_MSA_CLIENT_ID }}
+      HORIZON_IOS_BUILD_COMMIT: ${{ needs.check.outputs.sha }}
+      BASE: ${{ needs.check.outputs.base }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # The release's own source.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check.outputs.sha }}
+          persist-credentials: false
+      # This branch's tool, beside the source and not in it: the tree stays the release's.
+      - name: Fetch the builder's tool
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/builder"
+          git fetch --quiet --depth 1 origin "$GITHUB_SHA"
+          git show FETCH_HEAD:tools/ci/mod_builder.py > "$RUNNER_TEMP/builder/mod_builder.py"
+          python3 "$RUNNER_TEMP/builder/mod_builder.py" --self-test
+          echo "BUILDER=$RUNNER_TEMP/builder/mod_builder.py" >> "$GITHUB_ENV"
+          # Above every number mod-build.yml's builds had: a build is never an older one's number.
+          echo "BUILD_NUMBER=$((GITHUB_RUN_NUMBER + 10000))" >> "$GITHUB_ENV"
+          df -h / | tail -n 1
+      - name: Check the Apple toolchain
+        run: bash tools/ci/ios-toolchain.sh
+      - name: Install Rust and its iOS standard library
+        # The Rust the release pins (tools/ci/rust-version).
+        run: |
+          bash tools/ci/rustup_install.sh --profile minimal --target "$IOS_TARGET"
+          rustc --version
+      # The source with the older-format native mods applied, as the `stage` job left it.
+      - uses: actions/download-artifact@v4
+        if: ${{ needs.check.outputs.built_in != '' }}
+        with:
+          name: staged-source
+          path: ${{ runner.temp }}/staged
+      - name: Take the source with the native mods applied
+        if: ${{ needs.check.outputs.built_in != '' }}
+        run: |
+          set -euo pipefail
+          # Every file of the checkout goes first: the stage moves and drops some.
+          git ls-files -z | xargs -0 rm -f
+          tar -xzf "$RUNNER_TEMP/staged/staged-source.tar.gz"
+          cp "$RUNNER_TEMP/staged/native-mods.json" "$RUNNER_TEMP/native-mods.json"
+          echo "::notice::built with $(cat "$RUNNER_TEMP/staged/names.txt")"
+      # The release's compiled game, if one is kept that this machine can take: made by this
+      # workflow in this repository, started by hand or by the service, with this compiler, Xcode
+      # and these settings. Anything that goes wrong here means only: compile it.
+      - name: Look for the release's compiled game
+        id: base
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FRESH: ${{ inputs.fresh }}
+        run: |
+          set -uo pipefail
+          python3 "$BUILDER" identity "$RUNNER_TEMP/identity.json"
+          cat "$RUNNER_TEMP/identity.json"
+          found=false
+          listed=""
+          if [ "$FRESH" != true ]; then
+            listed=$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=$BASE&per_page=30" --jq \
+              '[.artifacts[] | select(.expired | not) | select(.workflow_run.head_repository_id == .workflow_run.repository_id)] | sort_by(.created_at) | reverse | .[0:2][] | "\(.id) \(.workflow_run.id)"' \
+              || true)
+          fi
+          while read -r artifact run; do
+            [ -n "$artifact" ] || continue
+            made=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run" --jq '"\(.path) \(.event)"' || true)
+            case "$made" in
+              ".github/workflows/mod-builder.yml workflow_dispatch" | ".github/workflows/mod-builder.yml@"*" workflow_dispatch") ;;
+              *) echo "::warning::$BASE of run $run was not made by the mod builder ($made): left alone"; continue ;;
+            esac
+            rm -rf "$RUNNER_TEMP/base" && mkdir -p "$RUNNER_TEMP/base"
+            started=$(date +%s)
+            if gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact/zip" > "$RUNNER_TEMP/base.zip" \
+               && unzip -q "$RUNNER_TEMP/base.zip" -d "$RUNNER_TEMP/base" \
+               && rm -f "$RUNNER_TEMP/base.zip" \
+               && python3 "$BUILDER" same "$RUNNER_TEMP/base/identity.json" "$RUNNER_TEMP/identity.json" \
+               && python3 "$BUILDER" unpack "$RUNNER_TEMP/base" --target target --cargo-home "$HOME/.cargo" --app "$RUNNER_TEMP/game-app" \
+               && test -d "$RUNNER_TEMP/game-app/HorizonPE.app" \
+               && python3 "$BUILDER" restore . "$RUNNER_TEMP/base/manifest.json"; then
+              found=true
+              echo "::notice::the compiled game $BASE (run $run) is taken, in $(( $(date +%s) - started )) s"
+              break
+            fi
+            echo "::warning::$BASE of run $run is not for this machine or did not read: the game is compiled"
+            # Nothing half taken stays.
+            rm -rf target "$HOME/.cargo/registry" "$HOME/.cargo/git" "$RUNNER_TEMP/game-app"
+          done <<< "$listed"
+          rm -rf "$RUNNER_TEMP/base.zip" "$RUNNER_TEMP"/base/*.tar.*
+          echo "found=$found" >> "$GITHUB_OUTPUT"
+          df -h / | tail -n 1
+      # A build from nothing starts where ios.yml's does: the plain build's cache of the registry
+      # crates, read and not kept.
+      - uses: Swatinem/rust-cache@v2
+        if: ${{ steps.base.outputs.found != 'true' }}
+        with:
+          shared-key: ios-${{ env.IOS_TARGET }}
+          save-if: false
+      - name: Give the source the fixed time
+        if: ${{ steps.base.outputs.found != 'true' }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/keep"
+          cp "$RUNNER_TEMP/identity.json" "$RUNNER_TEMP/keep/identity.json"
+          python3 "$BUILDER" snapshot . "$RUNNER_TEMP/keep/manifest.json"
+      # The game without mods: compiled when none was taken, and nothing to do when one was (what
+      # it compiles then is said, and is what the kept game did not cover).
+      - name: Compile the game
+        env:
+          TAKEN: ${{ steps.base.outputs.found }}
+        run: |
+          set -euo pipefail
+          cargo fetch --target "$IOS_TARGET"
+          # The lockfile Cargo resolved is the game's: it keeps the fixed time (mod_builder.py `lock`).
+          if [ "$TAKEN" = true ]; then
+            cp "$RUNNER_TEMP/base/Cargo.lock" "$RUNNER_TEMP/game-Cargo.lock"
+          else
+            cp Cargo.lock "$RUNNER_TEMP/game-Cargo.lock"
+            cp Cargo.lock "$RUNNER_TEMP/keep/Cargo.lock"
+          fi
+          python3 "$BUILDER" lock "$RUNNER_TEMP/game-Cargo.lock" Cargo.lock
+          cargo build -v --release --keep-going --target "$IOS_TARGET" -p horizon-ios-game 2>&1 \
+            | python3 "$BUILDER" log "$RUNNER_TEMP/game.log"
+          if [ "$TAKEN" = true ]; then
+            python3 "$BUILDER" summary "$RUNNER_TEMP/game.log" "The game without mods, from the kept one"
+          else
+            python3 "$BUILDER" summary "$RUNNER_TEMP/game.log" "The game without mods, from nothing" --allow '.*'
+          fi
+      # The game files don't depend on the mods: made with the game, kept with it.
+      - uses: actions/setup-java@v4
+        if: ${{ steps.base.outputs.found != 'true' }}
+        with:
+          distribution: temurin
+          java-version: '25'
+      # Mojang's files, checked again each run, kept between runs so they are fetched once.
+      - uses: actions/cache@v4
+        if: ${{ steps.base.outputs.found != 'true' }}
+        with:
+          path: .local/ios-cache/minecraft
+          key: ios-minecraft-${{ hashFiles('research-lock.json') }}
+      - name: Prepare the game files and prove the phone lays them out the same
+        if: ${{ steps.base.outputs.found != 'true' }}
+        run: |
+          set -euo pipefail
+          # A phone's file system is case-sensitive; this Mac's is not.
+          hdiutil create -size 16g -fs 'Case-sensitive APFS' -volname StarlingPrep -type SPARSE \
+            "$RUNNER_TEMP/prep.sparseimage" > /dev/null
+          hdiutil attach "$RUNNER_TEMP/prep.sparseimage" > /dev/null
+          python3 tools/ios_prepare.py --java-home "$JAVA_HOME" \
+            --minecraft .local/ios-cache/minecraft --work /Volumes/StarlingPrep/work
+          # Its work is in .local/ios/assets now: the room goes back to the build.
+          hdiutil detach /Volumes/StarlingPrep > /dev/null || true
+          rm -f "$RUNNER_TEMP/prep.sparseimage"
+      - name: Bundle the app without mods
+        if: ${{ steps.base.outputs.found != 'true' }}
+        run: |
+          set -euo pipefail
+          command -v xcodegen >/dev/null || brew install xcodegen
+          ( cd packaging/ios && xcodegen generate )
+          HORIZON_GAME_PREBUILT=1 xcodebuild -project packaging/ios/HorizonPE.xcodeproj \
+            -target HorizonPE -configuration Release -sdk iphoneos -arch arm64 \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY= CODE_SIGNING_REQUIRED=NO \
+            DEBUG_INFORMATION_FORMAT=dwarf \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+            CONFIGURATION_BUILD_DIR="$PWD/build-ios" \
+            build > xcode-build.log 2>&1 || { tail -80 xcode-build.log; exit 1; }
+          app=build-ios/HorizonPE.app
+          for asset in engine-data.zip lowbudget.zip StarlingVisuals.zip; do
+            test -f "$app/assets/$asset" || { echo "::error::the app has no assets/$asset"; exit 1; }
+          done
+          cmp -s "$app/HorizonPE" "target/$IOS_TARGET/release/horizon-ios-game" \
+            || { echo '::error::the app does not contain the Rust game'; exit 1; }
+          mkdir -p "$RUNNER_TEMP/game-app"
+          cp -a "$app" "$RUNNER_TEMP/game-app/"
+      # Kept before the mods are added: the next build of this release, which may be waiting for a
+      # Mac right now, takes it from here.
+      - name: Pack the compiled game
+        if: ${{ steps.base.outputs.found != 'true' }}
+        run: |
+          set -euo pipefail
+          du -sh target "$HOME/.cargo/registry" "$RUNNER_TEMP/game-app"
+          python3 "$BUILDER" pack "$RUNNER_TEMP/keep" --target target --cargo-home "$HOME/.cargo" --app "$RUNNER_TEMP/game-app"
+          ls -l "$RUNNER_TEMP/keep"
+          df -h / | tail -n 1
+      - name: Keep the compiled game
+        if: ${{ steps.base.outputs.found != 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ needs.check.outputs.base }}
+          path: ${{ runner.temp }}/keep/
+          # The longest GitHub keeps a file.
+          retention-days: 90
+          compression-level: 0
+          if-no-files-found: error
+      - name: Add the catalog mods to the program
+        env:
+          CATALOG_MODS: ${{ needs.check.outputs.mods }}
+        run: |
+          set -euo pipefail -f
+          rm -rf "$RUNNER_TEMP/keep"
+          # Horizon's registry, else this port's copy of its index (packaging/ios/registry).
+          curl -fsSL --retry 3 https://horizon-rust.github.io/horizon-mods/index.json -o "$RUNNER_TEMP/catalog-index.json" \
+            || cp packaging/ios/registry/index.json "$RUNNER_TEMP/catalog-index.json"
+          python3 tools/ios_native_sdk.py add "$RUNNER_TEMP/catalog-index.json" "$RUNNER_TEMP/catalog" ${CATALOG_MODS//,/ } \
+            | tee "$RUNNER_TEMP/catalog-mods.json"
+      - name: Build the game with the mods
+        run: |
+          set -euo pipefail
+          cargo fetch --target "$IOS_TARGET"
+          # The mods' own packages join the lockfile; the game's stay as they were, or Cargo is
+          # left to do all a build from nothing does (mod_builder.py `lock`).
+          python3 "$BUILDER" lock "$RUNNER_TEMP/game-Cargo.lock" Cargo.lock
+          cargo build -v --release --keep-going --target "$IOS_TARGET" -p horizon-ios-game 2>&1 \
+            | python3 "$BUILDER" log "$RUNNER_TEMP/mods.log"
+          python3 "$BUILDER" summary "$RUNNER_TEMP/mods.log" "The game with the mods" --allow 'hmod-.*|horizon-ios-game'
+      - name: Bundle it
+        run: |
+          set -euo pipefail
+          # The app without mods, with the program that has them in its place, as the Xcode
+          # project's own last step puts the program in (packaging/ios/project.yml).
+          rm -rf game && mkdir -p game/Payload
+          cp -a "$RUNNER_TEMP/game-app/HorizonPE.app" game/Payload/
+          app=game/Payload/HorizonPE.app
+          cp "target/$IOS_TARGET/release/horizon-ios-game" "$app/HorizonPE"
+          chmod +x "$app/HorizonPE"
+          plutil -replace CFBundleVersion -string "$BUILD_NUMBER" "$app/Info.plist"
+          # The version project.yml sets, as iOS and the sideloading apps will show it.
+          shown=$(plutil -extract CFBundleShortVersionString raw "$app/Info.plist")
+          id=$(plutil -extract CFBundleIdentifier raw "$app/Info.plist")
+          test -n "$shown" || { echo '::error::the app has no version'; exit 1; }
+          test "$(plutil -extract CFBundleVersion raw "$app/Info.plist")" = "$BUILD_NUMBER" \
+            || { echo '::error::the app has another build number'; exit 1; }
+          echo "::notice::Horizon PE $shown (build $BUILD_NUMBER), $id"
+          for asset in engine-data.zip lowbudget.zip StarlingVisuals.zip; do
+            test -f "$app/assets/$asset" || { echo "::error::the app has no assets/$asset"; exit 1; }
+          done
+          cmp -s "$app/HorizonPE" "target/$IOS_TARGET/release/horizon-ios-game" \
+            || { echo '::error::the app does not contain the Rust game'; exit 1; }
+          # What the game says it was built with (game/mods.rs BUILD_INFO, beside its program):
+          # the Mods page and crash reports name these mods.
+          if [ -f "$RUNNER_TEMP/native-mods.json" ]; then
+            cp "$RUNNER_TEMP/native-mods.json" "$app/native-mods.json"
+          fi
+          # The catalog mods' packages, beside the program: the engine reads a built mod's manifest
+          # and content there (horizon-native-mods/<id>/), and refuses the mod without it.
+          test -d "$RUNNER_TEMP/catalog/horizon-native-mods" || { echo '::error::no catalog mod was added'; exit 1; }
+          cp -R "$RUNNER_TEMP/catalog/horizon-native-mods" "$app/horizon-native-mods"
+          # And their list, for the Mods page and for the next build's request.
+          cp "$RUNNER_TEMP/catalog-mods.json" "$app/catalog-mods.json"
+          echo "::notice::catalog mods: $(cat "$RUNNER_TEMP/catalog-mods.json")"
+          ( cd game && zip -qry ../HorizonPE-iOS-unsigned.ipa Payload )
+          ls -l HorizonPE-iOS-unsigned.ipa
+      - name: Preserve the Xcode log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-xcode-log
+          path: xcode-build.log
+          retention-days: 7
+          if-no-files-found: ignore
+      - name: Check the distributable carries no Mojang files
+        run: |
+          python3 - <<'PY'
+          import zipfile
+          with zipfile.ZipFile('HorizonPE-iOS-unsigned.ipa') as ipa:
+              names = ipa.namelist()
+          # A catalog mod's own content (horizon-native-mods/<id>/) has sounds of its own and a
+          # data/minecraft/ folder (its tags and recipes for the game's names): the mod's files
+          # from the registry, not the game's.
+          def games(n):
+              if n.endswith(('.jar', 'asset-index.json')):
+                  return True
+              if n.startswith('Payload/HorizonPE.app/horizon-native-mods/'):
+                  return False
+              return n.endswith('.ogg') or '/minecraft/' in n
+          bad = [n for n in names if games(n)]
+          if bad:
+              raise SystemExit(f'::error::the .ipa carries game files: {bad[:5]}')
+          print(f'{len(names)} entries, none of them Mojang files')
+          PY
+      # A trial's proof: the same release and mods as mod-build.yml built them, file for file.
+      - name: Compare with the build made from nothing
+        if: ${{ inputs.compare != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMPARE: ${{ inputs.compare }}
+        run: |
+          set -euo pipefail
+          other=$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=$COMPARE&per_page=10" \
+            --jq '[.artifacts[] | select(.expired | not)] | sort_by(.created_at) | reverse | .[0].id // empty')
+          if [ -z "$other" ]; then
+            echo "::warning::no artifact $COMPARE to compare with"
+            exit 0
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$other/zip" > "$RUNNER_TEMP/other.zip"
+          mkdir -p "$RUNNER_TEMP/other"
+          unzip -q "$RUNNER_TEMP/other.zip" -d "$RUNNER_TEMP/other"
+          mv "$RUNNER_TEMP/other/HorizonPE-iOS-unsigned.ipa" "$RUNNER_TEMP/other/from-nothing.ipa"
+          python3 "$BUILDER" compare "$RUNNER_TEMP/other/from-nothing.ipa" HorizonPE-iOS-unsigned.ipa
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ needs.check.outputs.artifact }}
+          path: HorizonPE-iOS-unsigned.ipa
+          # A player's build: the longest GitHub keeps a file, so the same mods asked for again
+          # within that time are this build, at once. A trial's: a few days.
+          retention-days: ${{ inputs.serve && 90 || 5 }}
+          if-no-files-found: error
+      - name: Keep the build logs
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: mod-builder-logs-${{ needs.check.outputs.key }}
+          path: |
+            ${{ runner.temp }}/game.log
+            ${{ runner.temp }}/mods.log
+          retention-days: 5
+          if-no-files-found: ignore
