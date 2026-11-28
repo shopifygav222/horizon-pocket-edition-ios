@@ -12,8 +12,17 @@ name: mod-builder-check
 #            2. with a catalog mod added, it compiles the mod and nothing of the game
 #            3. with one line of the game changed, it compiles the game again (a changed file is
 #               never taken for an unchanged one)
+#   sweep  (asked for by hand) every mod of the catalog a build can take, 24 at a time, each
+#          group built from the kept game on a machine of its own: which mods leave the game as it
+#          is, and which make Cargo compile some of it again (a mod that moves one of the game's
+#          own crates to another version, or turns on a feature of one), and what.
 on:
   workflow_dispatch:
+    inputs:
+      sweep:
+        description: Also build every mod of the catalog from the kept game, 24 at a time
+        type: boolean
+        default: false
   push:
     branches: [main, "mod-builder-**"]
     paths:
@@ -159,10 +168,81 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
         with:
-          name: mod-builder-check-logs
+          name: mod-builder-check-logs-reuse
           path: |
             ${{ runner.temp }}/same.log
             ${{ runner.temp }}/mod.log
             ${{ runner.temp }}/changed.log
+          retention-days: 7
+          if-no-files-found: ignore
+
+  sweep:
+    needs: base
+    if: ${{ inputs.sweep }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [0, 1, 2, 3, 4, 5, 6]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install Rust and the headers the client needs
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev zstd
+          bash tools/ci/rustup_install.sh --profile minimal
+      - name: Take the compiled game
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE: mod-builder-check-base-${{ github.run_id }}-${{ github.run_attempt }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          python3 tools/ci/mod_builder.py take "$BASE" "$RUNNER_TEMP/base" \
+            --workflow .github/workflows/mod-builder-check.yml --event "$EVENT"
+          python3 tools/ci/mod_builder.py identity "$RUNNER_TEMP/identity.json"
+          python3 tools/ci/mod_builder.py same "$RUNNER_TEMP/base/identity.json" "$RUNNER_TEMP/identity.json"
+          python3 tools/ci/mod_builder.py unpack "$RUNNER_TEMP/base" --target target --cargo-home "$HOME/.cargo"
+          rm -f "$RUNNER_TEMP"/base/*.tar.*
+          python3 tools/ci/mod_builder.py restore . "$RUNNER_TEMP/base/manifest.json"
+      - name: This group's mods, from the kept game
+        env:
+          GROUP: ${{ matrix.group }}
+        run: |
+          set -euo pipefail -f
+          mods=$(python3 -c 'import json, os; m = sorted(json.load(open("packaging/ios/catalog-buildable.json"))["mods"].items()); g = int(os.environ["GROUP"]); print(" ".join(f"{i}@{v}" for i, v in m[g * 24:(g + 1) * 24]))')
+          test -n "$mods" || { echo "no mods in this group"; exit 0; }
+          echo "group $GROUP: $mods"
+          # Horizon's registry, else this port's copy of its index (packaging/ios/registry).
+          curl -fsSL --retry 3 https://horizon-rust.github.io/horizon-mods/index.json -o "$RUNNER_TEMP/index.json" \
+            || cp packaging/ios/registry/index.json "$RUNNER_TEMP/index.json"
+          python3 tools/ios_native_sdk.py add "$RUNNER_TEMP/index.json" "$RUNNER_TEMP/catalog" $mods > /dev/null
+          cargo fetch
+          python3 tools/ci/mod_builder.py lock "$RUNNER_TEMP/base/Cargo.lock" Cargo.lock | tee "$RUNNER_TEMP/lock.txt"
+          packages=""
+          for mod in $mods; do packages="$packages -p hmod-${mod%@*}"; done
+          cargo build -v $GAME $packages 2>&1 | python3 tools/ci/mod_builder.py log "$RUNNER_TEMP/sweep-$GROUP.log"
+          {
+            echo "### Group $GROUP"
+            echo
+            echo "$mods"
+            echo
+            echo "Cargo.lock: $(tail -n 1 "$RUNNER_TEMP/lock.txt")"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+          python3 tools/ci/mod_builder.py summary "$RUNNER_TEMP/sweep-$GROUP.log" "Group $GROUP from the kept game" --allow 'hmod-.*'
+          # What it compiled of this repository's own crates, which is what costs: none is the aim.
+          own=$(grep -E '^ +Compiling [^ ]+ v[^ ]+ \(/' "$RUNNER_TEMP/sweep-$GROUP.log" | grep -v 'native-mods-build' | awk '{print $2}' | sort -u | paste -sd' ' - || true)
+          echo "::notice::group $GROUP: Cargo.lock $(tail -n 1 "$RUNNER_TEMP/lock.txt" | cut -d= -f2); of the game's own crates compiled: ${own:-none}"
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: mod-builder-check-logs-sweep-${{ matrix.group }}
+          path: ${{ runner.temp }}/sweep-*.log
           retention-days: 7
           if-no-files-found: ignore
