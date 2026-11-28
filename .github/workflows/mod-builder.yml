@@ -476,7 +476,10 @@ jobs:
           # Horizon's registry, else this port's copy of its index (packaging/ios/registry).
           curl -fsSL --retry 3 https://horizon-rust.github.io/horizon-mods/index.json -o "$RUNNER_TEMP/catalog-index.json" \
             || cp packaging/ios/registry/index.json "$RUNNER_TEMP/catalog-index.json"
-          python3 tools/ios_native_sdk.py add "$RUNNER_TEMP/catalog-index.json" "$RUNNER_TEMP/catalog" ${CATALOG_MODS//,/ } \
+          # Each mod's package is downloaded here. A download the network fails is tried again
+          # (four times in all); a mod the tool refuses, in its own words, is refused at once.
+          python3 "$BUILDER" again 4 'ios_native_sdk: ' \
+            python3 tools/ios_native_sdk.py add "$RUNNER_TEMP/catalog-index.json" "$RUNNER_TEMP/catalog" ${CATALOG_MODS//,/ } \
             | tee "$RUNNER_TEMP/catalog-mods.json"
       - name: Build the game with the mods
         run: |
@@ -624,7 +627,8 @@ jobs:
           python3 "$BUILDER" summary "$RUNNER_TEMP/proof-game.log" "Fresh machine: the game without mods" --strict
           passed "the game without mods needed nothing"
           set -f
-          python3 tools/ios_native_sdk.py add "$RUNNER_TEMP/catalog-index.json" "$RUNNER_TEMP/catalog" ${CATALOG_MODS//,/ } \
+          python3 "$BUILDER" again 4 'ios_native_sdk: ' \
+            python3 tools/ios_native_sdk.py add "$RUNNER_TEMP/catalog-index.json" "$RUNNER_TEMP/catalog" ${CATALOG_MODS//,/ } \
             > "$RUNNER_TEMP/proof-catalog-mods.json"
           set +f
           cmp "$RUNNER_TEMP/proof-catalog-mods.json" "$RUNNER_TEMP/catalog-mods.json"

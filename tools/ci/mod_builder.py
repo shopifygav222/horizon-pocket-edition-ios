@@ -35,6 +35,9 @@ compiled game compiles again exactly what a build from nothing would have compil
     summary FILE TITLE [--allow REGEX] [--strict]   what that build compiled, and why
     compare A.ipa B.ipa [--same]   what differs between two builds of the app (with --same:
                              exit 1 unless they hold the same, file for file)
+    again TRIES OWN COMMAND...   COMMAND until it succeeds, TRIES times at most: a step that
+                             downloads, which the network alone fails now and then. A failure
+                             the command explains (a line of its errors starts with OWN) is final
     --self-test
 """
 
@@ -49,6 +52,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import tomllib
 import zipfile
 from pathlib import Path
@@ -295,11 +299,41 @@ def made_by(run: dict, workflow: str, events: list[str]) -> bool:
     return (path == workflow or path.startswith(workflow + "@")) and run.get("event") in events
 
 
+# How often a download is tried before it has failed, and the pause before try n + 1 (n times this).
+TRIES = 3
+PAUSE = 10
+
+
 def gh(path: str) -> dict:
-    done = subprocess.run(["gh", "api", path], capture_output=True, timeout=300)
-    if done.returncode != 0:
-        raise RuntimeError(done.stderr.decode("utf-8", "replace").strip()[:300])
-    return json.loads(done.stdout)
+    for attempt in range(1, TRIES + 1):
+        done = subprocess.run(["gh", "api", path], capture_output=True, timeout=300)
+        if done.returncode == 0:
+            return json.loads(done.stdout)
+        if attempt < TRIES:
+            time.sleep(attempt * PAUSE)
+    raise RuntimeError(done.stderr.decode("utf-8", "replace").strip()[:300])
+
+
+def again(tries: int, own: str, command: list[str], wait=time.sleep, errors=None) -> tuple[int, bytes]:
+    """Runs `command` until it succeeds, `tries` times at most: its exit code and what it printed,
+    of the try that ended it (what it wrote as errors is passed on from every try). A build that
+    waited an hour for a Mac should not end because one download timed out. A failure the command
+    explains itself (a line of its errors starts with `own`) is its answer, and final."""
+    errors = errors or sys.stderr.buffer
+    for attempt in range(1, tries + 1):
+        done = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        errors.write(done.stderr)
+        errors.flush()
+        if done.returncode == 0:
+            return 0, done.stdout
+        explained = bool(own) and any(line.startswith(own.encode()) for line in done.stderr.splitlines())
+        if explained or attempt == tries:
+            return done.returncode, done.stdout
+        errors.write(f"::warning::that failed without a word of its own (try {attempt} of {tries}): "
+                     f"again in {attempt * PAUSE} s\n".encode())
+        errors.flush()
+        wait(attempt * PAUSE)
+    return 1, b""
 
 
 def take(name: str, dest: Path, workflow: str, events: list[str]) -> int:
@@ -320,9 +354,15 @@ def take(name: str, dest: Path, workflow: str, events: list[str]) -> int:
                 shutil.rmtree(dest)
             dest.mkdir(parents=True)
             packed = dest.parent / f"{dest.name}.zip"
-            with open(packed, "wb") as file:
-                fetched = subprocess.run(["gh", "api", f"repos/{repo}/actions/artifacts/{artifact['id']}/zip"],
-                                         stdout=file, timeout=1800)
+            for attempt in range(1, TRIES + 1):
+                with open(packed, "wb") as file:
+                    fetched = subprocess.run(["gh", "api", f"repos/{repo}/actions/artifacts/{artifact['id']}/zip"],
+                                             stdout=file, timeout=1800)
+                if fetched.returncode == 0:
+                    break
+                if attempt < TRIES:
+                    print(f"mod_builder: {name} of run {run} did not come (try {attempt} of {TRIES})")
+                    time.sleep(attempt * PAUSE)
             if fetched.returncode != 0:
                 print(f"mod_builder: {name} of run {run} could not be fetched")
                 packed.unlink(missing_ok=True)
@@ -605,6 +645,27 @@ def self_test() -> None:
             assert time_of(source / name) == PINNED, name
         assert time_of(source / "target" / "made") != PINNED
 
+        # A command that fails by the network is run again; one that says why is not.
+        count = work / "count"
+        script = ("import sys, pathlib; c = pathlib.Path(sys.argv[1]); n = len(c.read_text()) if c.exists() else 0; "
+                  "c.write_text('x' * (n + 1)); print('try', n + 1); "
+                  "sys.exit(0) if n + 1 >= int(sys.argv[2]) else sys.exit(sys.argv[3] if sys.argv[3] else 1)")
+        waited, heard = [], io.BytesIO()
+        run = lambda succeeds_at, word, tries: again(
+            tries, "tool: ", [sys.executable, "-c", script, str(count), str(succeeds_at), word],
+            wait=waited.append, errors=heard)
+        assert run(3, "", 4) == (0, b"try 3" + os.linesep.encode()) and len(count.read_text()) == 3, waited
+        assert waited == [PAUSE, 2 * PAUSE] and heard.getvalue().count(b"::warning::") == 2, (waited, heard.getvalue())
+        count.unlink()
+        code, _ = run(9, "", 3)
+        assert code == 1 and len(count.read_text()) == 3
+        count.unlink()
+        code, _ = run(9, "tool: the catalog has no such mod", 4)
+        assert code == 1 and len(count.read_text()) == 1 and b"tool: the catalog has no such mod" in heard.getvalue()
+        count.unlink()
+        code, _ = run(9, "other: something", 2)
+        assert code == 1 and len(count.read_text()) == 2
+
         # An identity's mark is its content's, not its file's.
         one, other, third = work / "one.json", work / "other.json", work / "third.json"
         one.write_text('{"rustc": "1.99.1", "xcode": "26.6"}', encoding="utf-8")
@@ -838,6 +899,11 @@ def main() -> None:
         strict = "--strict" in rest
         allow = rest[rest.index("--allow") + 1] if "--allow" in rest else None
         sys.exit(summary(Path(args[1]), args[2], allow, strict))
+    elif len(args) >= 4 and args[0] == "again" and args[1].isdigit() and 1 <= int(args[1]) <= 9:
+        code, printed = again(int(args[1]), args[2], args[3:])
+        sys.stdout.buffer.write(printed)
+        sys.stdout.flush()
+        sys.exit(code)
     elif len(args) in (3, 4) and args[0] == "compare" and args[3:] in ([], ["--same"]):
         report, real = compare(Path(args[1]), Path(args[2]))
         print(report)
