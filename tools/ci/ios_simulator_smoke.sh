@@ -37,7 +37,7 @@ logs="$data/Documents/logs"
 # or five more minutes have gone.
 settled() {
   grep -q 'panicked at' "$logs/stderr.log" 2>/dev/null && return 0
-  grep -qF 'Horizon: loading the title artwork' "$logs/latest.log" 2>/dev/null
+  grep -qF 'Horizon: loading the title artwork' "$logs/latest.log" 2>/dev/null     && grep -qF 'Horizon voice self-test: done' "$logs/latest.log" 2>/dev/null
 }
 waited=120
 until settled || [ $waited -ge 420 ]; do
