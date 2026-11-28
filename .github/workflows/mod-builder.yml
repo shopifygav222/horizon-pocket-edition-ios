@@ -119,11 +119,16 @@ jobs:
             echo '::error::a build for players is asked for with its key'
             exit 1
           fi
-          # The release's own tools read the request (tools/mod_build_key.py, as mod-build.yml).
+          # The request is read by this branch's tools/mod_build_key.py, not the release's copy:
+          # the key is the same by either, and a release's copy may take fewer mods than the
+          # service lets a build have (1.1.0's and 1.1.1's take 24).
+          git fetch --quiet --depth 1 origin "$GITHUB_SHA"
+          git show FETCH_HEAD:tools/mod_build_key.py > "$RUNNER_TEMP/mod_build_key.py"
+          python3 "$RUNNER_TEMP/mod_build_key.py" --self-test
           if [ -n "$KEY" ]; then
-            python3 tools/mod_build_key.py "$TAG" "$MODS" "$KEY" > request.txt
+            python3 "$RUNNER_TEMP/mod_build_key.py" "$TAG" "$MODS" "$KEY" > request.txt
           else
-            python3 tools/mod_build_key.py "$TAG" "$MODS" > request.txt
+            python3 "$RUNNER_TEMP/mod_build_key.py" "$TAG" "$MODS" > request.txt
           fi
           key=$(head -n 1 request.txt)
           # The mods as the key has them: sorted, one version an id.

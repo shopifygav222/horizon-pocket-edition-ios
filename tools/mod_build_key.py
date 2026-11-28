@@ -17,7 +17,11 @@ import sys
 
 TAG = re.compile(r"v\d{1,3}\.\d{1,3}\.\d{1,3}(-shared-worlds(-mods)?)?")
 MOD = re.compile(r"([a-z0-9][a-z0-9_]{0,63})@([0-9A-Za-z][0-9A-Za-z.+_-]{0,31})")
-MOST = 24
+# The most mods a request may name here. How many a player's build may have is the service's to
+# say (the Worker's MAX_MODS, 28 where it runs): this only bounds what the workflow is handed, and
+# must not be under the service's number, or a build the service started fails at its check
+# (1.1.0's and 1.1.1's own copies say 24: the mod builder reads a request with this branch's).
+MOST = 32
 
 
 def read(tag: str, mods: str) -> list[tuple[str, str]]:
