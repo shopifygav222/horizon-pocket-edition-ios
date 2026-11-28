@@ -670,7 +670,17 @@ impl TouchControls {
                 p.center[0] = 0.5 + (x - 0.5) * (wide * 1.05 / 0.04);
             }
         }
-        let mut p = self.fit_placement(p);
+        // Horizon PE (the Mods edition): Zoom at its factory place stands under the hub's
+        // button, which the camera cutout does not move. Moved out of the cutout's strip, it
+        // stood under the hub with the phone one way up and beside it the other way (the
+        // owner's report of 2026-11-27). It is fitted to the screen and left there: the corner
+        // it stands in is clear of the housing, which is at the middle of the edge. One the
+        // player placed keeps out of the strip like any control.
+        let mut p = if c == Control::Zoom && self.zoom_is_factory() {
+            self.fit_on_screen(p)
+        } else {
+            self.fit_placement(p)
+        };
         // Horizon PE: the factory's Inventory button stands at the end of a hotbar that grew
         // over its place (`fit_big_hotbar`). One the player moved stays where they put it.
         if c == Control::Inventory
@@ -691,6 +701,11 @@ impl TouchControls {
             p = self.keep_clear(p);
         }
         p
+    }
+    /// Horizon PE: the Zoom button is where the factory put it, under the hub's button.
+    fn zoom_is_factory(&self) -> bool {
+        let saved = self.settings.layouts[self.settings.mode.index()][Control::Zoom as usize];
+        saved.center == [0.0225, 0.135] && saved.size == 0.075
     }
     /// Horizon PE: the Inventory button is where the factory put it, at the hotbar's right end
     /// (the left one for a left hand).
@@ -3755,6 +3770,35 @@ mod tests {
         assert_eq!(read.button_visibility[Control::Chat as usize], 2);
         assert_eq!(read.virtual_mouse_sensitivity, 1.5);
         assert_eq!(read.layouts[0], settings.layouts[0]);
+    }
+
+    /// The Zoom button stays under the hub's button whichever way up the phone is held: the
+    /// camera cutout's strip, on the left one way and on the right the other, does not move it
+    /// (it used to push it out from under the hub when the housing was on its side). Every
+    /// other control at that edge still keeps out of the strip, and so does a Zoom button the
+    /// player placed.
+    #[test]
+    fn the_zoom_button_stays_under_the_hub_whichever_way_the_phone_is_turned() {
+        let mut touch = TouchControls::default();
+        touch.viewport(2532, 1170);
+        touch.zoom_available = true;
+        let place = |t: &TouchControls| t.placement(Control::Zoom).rect(t.aspect());
+        let flat = place(&touch);
+        assert!(flat[0] >= 0.0 && flat[0] < 0.01, "{flat:?}");
+        // The housing on the left, then the phone turned over: on the right. The home bar's
+        // strip is at the bottom either way.
+        for insets in [[177, 0, 0, 63], [0, 0, 177, 63]] {
+            touch.safe_insets(2532, 1170, insets);
+            assert_eq!(place(&touch), flat, "{insets:?}");
+        }
+        let strip = 177.0 / 2532.0;
+        touch.safe_insets(2532, 1170, [177, 0, 0, 63]);
+        let joystick = touch.placement(Control::Move).rect(touch.aspect());
+        assert!(joystick[0] >= strip - 1e-5, "{joystick:?}");
+        let mode = touch.settings.mode.index();
+        touch.settings.layouts[mode][Control::Zoom as usize].center = [0.03, 0.5];
+        let moved = place(&touch);
+        assert!(moved[0] >= strip - 1e-5, "{moved:?}");
     }
 
     /// The mods' buttons of this edition: Zoom's under the hub at the left edge, a tap for on

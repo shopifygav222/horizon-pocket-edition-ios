@@ -246,7 +246,12 @@ impl TouchControls {
             self.inventory_update(id, point, started, ended)
         }
     }
-    pub fn fit_placement(&self, mut p: Placement) -> Placement {
+    pub fn fit_placement(&self, p: Placement) -> Placement {
+        self.keep_clear(self.fit_on_screen(p))
+    }
+    /// `p` at the size the player's button scale gives it, and on the screen. (Horizon PE:
+    /// apart from `keep_clear`, for the one button that is not moved for the camera cutout.)
+    pub(super) fn fit_on_screen(&self, mut p: Placement) -> Placement {
         p.size = (p.size * self.settings.button_scale)
             .min(self.aspect())
             .min(1.0);
@@ -254,7 +259,7 @@ impl TouchControls {
         for (i, half) in half.into_iter().enumerate() {
             p.center[i] = p.center[i].clamp(half, 1.0 - half);
         }
-        self.keep_clear(p)
+        p
     }
     /// `p` moved out of the camera cutout's strip (#166) while the player keeps the controls
     /// clear of it. Only what reaches into the strip moves, and nothing on a screen without one;
