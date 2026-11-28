@@ -91,7 +91,8 @@ program, where the engine reads it. The build has no secret and may only read th
 and GitHub lends this repository five Macs at a time: after a release, builds waited hours for
 one. The `mod-builder` workflow compiles a release's game once and keeps what Cargo made of it
 (the "compiled game": Cargo's target folder, the registry crates it read, the app bundle without
-mods) as the artifact `game-base-<commit>-<recipe>`, for 90 days. Every later build of that
+mods) as the artifact `game-base-<commit>-<recipe>-<machine>`, for 90 days (`<machine>`: ten
+hex digits of what it was built with, so Macs that differ each keep their own). Every later build of that
 release takes it back and compiles the mods and the program that names them. It runs on a branch
 and is told the release: the release's own source and tools are checked out at its tag, so a
 release that is already out is built this way too.

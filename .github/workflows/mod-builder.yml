@@ -3,7 +3,7 @@ run-name: ${{ inputs.serve && format('mod-build {0}', inputs.key) || format('mod
 # The app with catalog mods compiled in, without compiling the game each time (docs/ios.md "The mod
 # builder"). mod-build.yml builds a release with mods by compiling everything, half an hour and
 # more of a Mac, for a few small crates. This workflow compiles a release's game once, keeps what
-# Cargo made of it as an artifact (`game-base-<commit>-<recipe>`: Cargo's target folder, the
+# Cargo made of it as an artifact (`game-base-<commit>-<recipe>-<machine>`: Cargo's target folder, the
 # registry crates it read, the app bundle without mods), and every later build of that release
 # takes it back and compiles only the mods and the program that names them.
 #
@@ -332,12 +332,21 @@ jobs:
           set -uo pipefail
           python3 "$BUILDER" identity "$RUNNER_TEMP/identity.json"
           cat "$RUNNER_TEMP/identity.json"
+          # A kept game is named with what it was built with (the compiler, Xcode, the paths and
+          # settings, as ten hex digits): when GitHub's Macs are not all alike, each kind finds
+          # its own, and none compiles the game again because another kind kept one last. One
+          # kept under the plain name (before this) is taken too, if it is this machine's kind.
+          mark=$(python3 "$BUILDER" mark "$RUNNER_TEMP/identity.json")
+          echo "keep=$BASE-$mark" >> "$GITHUB_OUTPUT"
           found=false
           started=$(date +%s)
+          look() {
+            python3 "$BUILDER" take "$1" "$RUNNER_TEMP/base" \
+              --workflow .github/workflows/mod-builder.yml --event workflow_dispatch
+          }
           if [ "$FRESH" = true ]; then
             echo "::notice::asked to compile the game from nothing"
-          elif python3 "$BUILDER" take "$BASE" "$RUNNER_TEMP/base" \
-                 --workflow .github/workflows/mod-builder.yml --event workflow_dispatch; then
+          elif look "$BASE-$mark" || look "$BASE"; then
             if python3 "$BUILDER" same "$RUNNER_TEMP/base/identity.json" "$RUNNER_TEMP/identity.json" \
                && python3 "$BUILDER" unpack "$RUNNER_TEMP/base" --target target --cargo-home "$HOME/.cargo" --app "$RUNNER_TEMP/game-app" \
                && test -d "$RUNNER_TEMP/game-app/HorizonPE.app" \
@@ -452,7 +461,7 @@ jobs:
         if: ${{ steps.base.outputs.found != 'true' }}
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ needs.check.outputs.base }}
+          name: ${{ steps.base.outputs.keep }}
           path: ${{ runner.temp }}/keep/
           # The longest GitHub keeps a file.
           retention-days: 90
@@ -581,6 +590,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           CATALOG_MODS: ${{ needs.check.outputs.mods }}
           STAGED: ${{ needs.check.outputs.built_in != '' }}
+          KEEP: ${{ steps.base.outputs.keep }}
         run: |
           set -euo pipefail
           began=$(date +%s)
@@ -597,8 +607,10 @@ jobs:
           test ! -e target
           find . -path ./.git -prune -o -print0 | xargs -0 touch -h
           passed "the source is laid out again"
-          python3 "$BUILDER" take "$BASE" "$RUNNER_TEMP/base" \
-            --workflow .github/workflows/mod-builder.yml --event workflow_dispatch
+          python3 "$BUILDER" take "$KEEP" "$RUNNER_TEMP/base" \
+            --workflow .github/workflows/mod-builder.yml --event workflow_dispatch \
+            || python3 "$BUILDER" take "$BASE" "$RUNNER_TEMP/base" \
+                 --workflow .github/workflows/mod-builder.yml --event workflow_dispatch
           python3 "$BUILDER" same "$RUNNER_TEMP/base/identity.json" "$RUNNER_TEMP/identity.json"
           python3 "$BUILDER" unpack "$RUNNER_TEMP/base" --target target --cargo-home "$HOME/.cargo" --app "$RUNNER_TEMP/game-app"
           rm -f "$RUNNER_TEMP"/base/*.tar.*

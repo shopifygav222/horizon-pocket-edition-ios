@@ -27,6 +27,8 @@ compiled game compiles again exactly what a build from nothing would have compil
                              that workflow made, fetched into DEST (exit 1 when there is none)
     identity OUT             what a compiled game was built with: compiler, Xcode, paths, settings
     same A B                 whether two identities are one (exit 1 and the differences if not)
+    mark FILE                an identity's short name (ten hex digits): a kept game is named with
+                             it, so machines that differ each find their own
     pack OUT [--target DIR] [--cargo-home DIR] [--app DIR]   the compiled game as archives in OUT
     unpack FROM [--target DIR] [--cargo-home DIR] [--app DIR]
     log FILE                 stdin (cargo build -v) to FILE, and on without the command lines
@@ -255,6 +257,13 @@ def identity() -> dict:
         "pinned": PINNED,
         "settings": {name: os.environ[name] for name in SETTINGS if name in os.environ},
     }
+
+
+def mark(file: Path) -> str:
+    """The identity in `file` as ten hex digits: the same for the same identity however the file
+    was written."""
+    said_ = json.loads(file.read_text(encoding="utf-8"))
+    return hashlib.sha256(json.dumps(said_, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:10]
 
 
 def same(a: Path, b: Path) -> bool:
@@ -565,6 +574,14 @@ def self_test() -> None:
             assert time_of(source / name) == PINNED, name
         assert time_of(source / "target" / "made") != PINNED
 
+        # An identity's mark is its content's, not its file's.
+        one, other, third = work / "one.json", work / "other.json", work / "third.json"
+        one.write_text('{"rustc": "1.99.1", "xcode": "26.6"}', encoding="utf-8")
+        other.write_text('{\n "xcode": "26.6",\n "rustc": "1.99.1"\n}\n', encoding="utf-8")
+        third.write_text('{"rustc": "1.99.1", "xcode": "26.7"}', encoding="utf-8")
+        assert mark(one) == mark(other) != mark(third) and re.fullmatch(r"[0-9a-f]{10}", mark(one))
+        assert same(one, other) and not same(one, third)
+
         # A fresh checkout of the same source: every time is now, every content the same.
         fresh = work / "fresh"
         shutil.copytree(source, fresh, copy_function=shutil.copy)
@@ -771,6 +788,8 @@ def main() -> None:
         sys.exit(take(args[1], Path(args[2]).resolve(), args[4], rest[1::2]))
     elif len(args) == 2 and args[0] == "identity":
         Path(args[1]).write_text(json.dumps(identity(), indent=1, sort_keys=True) + "\n", encoding="utf-8")
+    elif len(args) == 2 and args[0] == "mark":
+        print(mark(Path(args[1])))
     elif len(args) == 3 and args[0] == "same":
         sys.exit(0 if same(Path(args[1]), Path(args[2])) else 1)
     elif len(args) >= 4 and args[0] == "pack":
