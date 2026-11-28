@@ -51,6 +51,10 @@ on:
         description: "Trial: compile the game from nothing, whatever is kept"
         type: boolean
         default: false
+      prove:
+        description: "Trial: then build it once more as a fresh machine would, from the kept game, and compare the two"
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -567,6 +571,82 @@ jobs:
           # within that time are this build, at once. A trial's: a few days.
           retention-days: ${{ inputs.serve && 90 || 5 }}
           if-no-files-found: error
+      # A trial's second half, in the same hour of a Mac: everything this machine has of the build
+      # is thrown away, the source is laid out again with every file dated now (what a fresh
+      # checkout is), and the build is made as the next machine would make it: from the kept
+      # game. It must compile nothing of the game, and its app is compared with the first.
+      - name: Build it again as a fresh machine would
+        if: ${{ inputs.prove && !inputs.serve }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CATALOG_MODS: ${{ needs.check.outputs.mods }}
+          STAGED: ${{ needs.check.outputs.built_in != '' }}
+        run: |
+          set -euo pipefail
+          began=$(date +%s)
+          passed() { echo "::notice::fresh machine: $1 after $(( $(date +%s) - began )) s"; }
+          mkdir -p "$RUNNER_TEMP/proof"
+          cp HorizonPE-iOS-unsigned.ipa "$RUNNER_TEMP/proof/first.ipa"
+          rm -rf "$HOME/.cargo/registry" "$HOME/.cargo/git" "$RUNNER_TEMP/game-app" "$RUNNER_TEMP/base" "$RUNNER_TEMP/catalog"
+          git clean -ffdxq
+          git reset -q --hard
+          if [ "$STAGED" = true ]; then
+            git ls-files -z | xargs -0 rm -f
+            tar -xzf "$RUNNER_TEMP/staged/staged-source.tar.gz"
+          fi
+          test ! -e target
+          find . -path ./.git -prune -o -print0 | xargs -0 touch -h
+          passed "the source is laid out again"
+          python3 "$BUILDER" take "$BASE" "$RUNNER_TEMP/base" \
+            --workflow .github/workflows/mod-builder.yml --event workflow_dispatch
+          python3 "$BUILDER" same "$RUNNER_TEMP/base/identity.json" "$RUNNER_TEMP/identity.json"
+          python3 "$BUILDER" unpack "$RUNNER_TEMP/base" --target target --cargo-home "$HOME/.cargo" --app "$RUNNER_TEMP/game-app"
+          rm -f "$RUNNER_TEMP"/base/*.tar.*
+          python3 "$BUILDER" restore . "$RUNNER_TEMP/base/manifest.json"
+          passed "the kept game is taken"
+          cargo fetch --target "$IOS_TARGET"
+          python3 "$BUILDER" lock "$RUNNER_TEMP/base/Cargo.lock" Cargo.lock
+          cargo build -v --release --keep-going --target "$IOS_TARGET" -p horizon-ios-game 2>&1 \
+            | python3 "$BUILDER" log "$RUNNER_TEMP/proof-game.log"
+          # Nothing of the game: one crate compiled here is a kept game that does not hold.
+          python3 "$BUILDER" summary "$RUNNER_TEMP/proof-game.log" "Fresh machine: the game without mods" --strict
+          passed "the game without mods needed nothing"
+          set -f
+          python3 tools/ios_native_sdk.py add "$RUNNER_TEMP/catalog-index.json" "$RUNNER_TEMP/catalog" ${CATALOG_MODS//,/ } \
+            > "$RUNNER_TEMP/proof-catalog-mods.json"
+          set +f
+          cmp "$RUNNER_TEMP/proof-catalog-mods.json" "$RUNNER_TEMP/catalog-mods.json"
+          cargo fetch --target "$IOS_TARGET"
+          python3 "$BUILDER" lock "$RUNNER_TEMP/base/Cargo.lock" Cargo.lock
+          cargo build -v --release --keep-going --target "$IOS_TARGET" -p horizon-ios-game 2>&1 \
+            | python3 "$BUILDER" log "$RUNNER_TEMP/proof-mods.log"
+          python3 "$BUILDER" summary "$RUNNER_TEMP/proof-mods.log" "Fresh machine: the game with the mods" --allow 'hmod-.*|horizon-ios-game'
+          passed "the game with the mods is built"
+          rm -rf game && mkdir -p game/Payload
+          cp -a "$RUNNER_TEMP/game-app/HorizonPE.app" game/Payload/
+          app=game/Payload/HorizonPE.app
+          cp "target/$IOS_TARGET/release/horizon-ios-game" "$app/HorizonPE"
+          chmod +x "$app/HorizonPE"
+          plutil -replace CFBundleVersion -string "$BUILD_NUMBER" "$app/Info.plist"
+          if [ -f "$RUNNER_TEMP/native-mods.json" ]; then
+            cp "$RUNNER_TEMP/native-mods.json" "$app/native-mods.json"
+          fi
+          cp -R "$RUNNER_TEMP/catalog/horizon-native-mods" "$app/horizon-native-mods"
+          cp "$RUNNER_TEMP/catalog-mods.json" "$app/catalog-mods.json"
+          ( cd game && zip -qry "$RUNNER_TEMP/proof/second.ipa" Payload )
+          passed "the app is bundled"
+          python3 "$BUILDER" compare "$RUNNER_TEMP/proof/first.ipa" "$RUNNER_TEMP/proof/second.ipa" | tee "$RUNNER_TEMP/proof/compare.txt"
+          # The two programs are one: the same source, the same kept game, the same mods.
+          if cmp -s "$RUNNER_TEMP/proof/first.ipa" "$RUNNER_TEMP/proof/second.ipa" \
+             || grep -q ' 0 differ\.' "$RUNNER_TEMP/proof/compare.txt"; then
+            echo "::notice::fresh machine: its app is the first build's, file for file"
+          else
+            echo "::error::the build from the kept game is not the first build's app"
+            exit 1
+          fi
+          if [ -f "$RUNNER_TEMP/other/from-nothing.ipa" ]; then
+            python3 "$BUILDER" compare "$RUNNER_TEMP/other/from-nothing.ipa" "$RUNNER_TEMP/proof/second.ipa"
+          fi
       - name: Keep the build logs
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
@@ -575,5 +655,8 @@ jobs:
           path: |
             ${{ runner.temp }}/game.log
             ${{ runner.temp }}/mods.log
+            ${{ runner.temp }}/proof-game.log
+            ${{ runner.temp }}/proof-mods.log
+            ${{ runner.temp }}/proof/compare.txt
           retention-days: 5
           if-no-files-found: ignore
