@@ -3,6 +3,9 @@
 //!
 //! Only what a player notices or asked for: the features, and the faults reported in this
 //! port's issues. Each line is one short sentence, so the card is read in a moment.
+//!
+//! A release that follows another closely carries the earlier one's notes under its own
+//! ([`Earlier`]): the card scrolls, and whoever skipped the earlier release reads both.
 
 /// A release's notes.
 #[derive(Debug, PartialEq, Eq)]
@@ -11,6 +14,21 @@ pub struct Notes {
     /// How the touch controls are played now, said first: what a player must know to enjoy
     /// them. None where a release changed nothing about them.
     pub controls: &'static [&'static str],
+    pub new: &'static [&'static str],
+    pub fixed: &'static [&'static str],
+    /// The release before, when it is so recent that many never saw its notes: shown under
+    /// these, below what the card shows at first.
+    pub earlier: Option<Earlier>,
+}
+
+/// An earlier release's notes as a later one's card carries them: its lines word for word,
+/// without the ones the later release says anew.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Earlier {
+    /// The part's title on the card.
+    pub heading: &'static str,
+    /// The version whose notes these are.
+    pub version: &'static str,
     pub new: &'static [&'static str],
     pub fixed: &'static [&'static str],
 }
@@ -25,15 +43,29 @@ const NOTES: &[Notes] = &[
             "Hold Use to keep placing. Blocks go the same way, so a bridge stays straight.",
             "Hitbox size: raise it and a near miss still hits. Options > Controls > Touch.",
         ],
-        new: &[
-            "Your own music keeps playing while you play.",
-            "A much newer game engine, and a bigger hotbar you can slide along.",
-            "A Catalog button for mods, shaders and packs. Mods are built into the app.",
-        ],
+        new: &["Your own music keeps playing while you play."],
         fixed: &[
             "Leaves and plants wave again with a shader pack.",
             "The mods button on the title screen follows a build to its end.",
+            "The Catalog no longer offers mods an iPhone can't run.",
         ],
+        // 1.1.0's own lines, but for its two about holding Attack and Use: Controls says them.
+        earlier: Some(Earlier {
+            heading: "In 1.1.0, released the day before",
+            version: "1.1.0",
+            new: &[
+                "The game engine is over 31,000 changes newer (Starling 0.8 to 0.9).",
+                "A bigger hotbar you can slide along. Its size is in the Control Hub.",
+                "A Catalog button on the title screen: mods, shaders and resource packs.",
+                "Mods from the catalog are built into the app from Options > Mods.",
+            ],
+            fixed: &[
+                "A mouse now works on iPhone and iPad.",
+                "HDR can be turned on in the video settings.",
+                "The catalog lists far more mods.",
+                "The game no longer crashes at a grindstone.",
+            ],
+        }),
     },
     NOTES_1_1_0,
 ];
@@ -55,6 +87,7 @@ const NOTES_1_1_0: Notes = Notes {
         "The catalog lists far more mods.",
         "The game no longer crashes at a grindstone.",
     ],
+    earlier: None,
 };
 
 /// The notes of `version`, if it has any.
@@ -87,16 +120,45 @@ mod tests {
         );
     }
 
+    /// What a card carries of an earlier release is that release's own lines, word for word,
+    /// each of them or said anew in the card's own part: nothing of it is lost or reworded.
+    #[test]
+    fn an_earlier_releases_notes_are_its_own_words() {
+        let mut carried = 0;
+        for notes in NOTES {
+            let Some(earlier) = &notes.earlier else {
+                continue;
+            };
+            carried += 1;
+            assert!(earlier.heading.contains(earlier.version));
+            let theirs = super::notes(earlier.version).expect("the earlier release's notes");
+            for (ours, own) in [(earlier.new, theirs.new), (earlier.fixed, theirs.fixed)] {
+                assert!(!ours.is_empty());
+                for line in ours {
+                    assert!(own.contains(line), "{line}");
+                }
+                // The lines left out are the ones the card's Controls part says.
+                let left: Vec<_> = own.iter().filter(|l| !ours.contains(*l)).collect();
+                assert!(left.iter().all(|l| l.starts_with("Hold ")), "{left:?}");
+                assert!(left.is_empty() || !notes.controls.is_empty());
+            }
+        }
+        assert_eq!(carried, 1, "1.1.1 carries 1.1.0's");
+    }
+
     #[test]
     fn the_notes_are_short() {
         for notes in NOTES {
             assert!(!notes.new.is_empty() && !notes.fixed.is_empty());
-            // A heading costs a line and a half: the card is no taller with three of them.
+            // What the card shows before it is scrolled: a heading costs a line and a half, and
+            // the card is no taller with three of them.
             let headings = if notes.controls.is_empty() { 2 } else { 3 };
             let lines = notes.controls.len() + notes.new.len() + notes.fixed.len();
             assert!(lines + 2 * headings <= 14, "a card, not a page");
-            let all = notes.controls.iter().chain(notes.new).chain(notes.fixed);
-            for line in all {
+            let earlier = notes.earlier.iter();
+            let earlier = earlier.flat_map(|e| e.new.iter().chain(e.fixed));
+            let own = notes.controls.iter().chain(notes.new).chain(notes.fixed);
+            for line in own.chain(earlier) {
                 assert!(line.chars().count() <= 80, "{line}");
                 assert!(line.ends_with('.'), "{line}");
             }

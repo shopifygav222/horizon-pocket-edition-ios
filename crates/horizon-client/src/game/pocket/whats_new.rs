@@ -10,6 +10,10 @@
 //!
 //! The card is drawn under the update's card and takes its touches after it, so a newer release
 //! is offered first; it steps aside for the catalog and the options.
+//!
+//! Its notes scroll under a finger, between its title and "Got it", which stay where they are:
+//! a release that carries the one before's notes (`whats_new::Earlier`) has more to say than a
+//! phone's screen is tall. While there is more below, the card says so beside the button.
 use super::Game;
 use horizon_client::{
     hud::HudBatch,
@@ -40,6 +44,11 @@ struct Card {
     finger: Option<u64>,
     /// The button as last drawn (UI units).
     button: Option<[f32; 4]>,
+    /// How far the notes are scrolled, and how far they can be (UI units; as last drawn).
+    scroll: f32,
+    most: f32,
+    /// The finger that scrolls, and where it last was (UI units down the screen).
+    drag: Option<(u64, f32)>,
 }
 
 /// The card is one for the whole app, as the title screen is.
@@ -50,6 +59,9 @@ static CARD: Mutex<Card> = Mutex::new(Card {
     since: None,
     finger: None,
     button: None,
+    scroll: 0.0,
+    most: 0.0,
+    drag: None,
 });
 
 fn card() -> std::sync::MutexGuard<'static, Card> {
@@ -70,11 +82,62 @@ fn seen_path() -> std::path::PathBuf {
 }
 
 /// One line of the card.
-enum Line<'a> {
-    Heading(&'a str),
+enum Line {
+    Heading(&'static str),
+    /// The title of an earlier release's notes, under a rule.
+    Earlier(&'static str),
     /// An item's line; its first has the dot.
     Item(String, bool),
     Gap(f32),
+}
+
+impl Line {
+    fn height(&self) -> f32 {
+        match self {
+            Line::Heading(_) => HEADING[1],
+            Line::Earlier(_) => EARLIER[1],
+            Line::Item(..) => ITEM[1],
+            Line::Gap(gap) => *gap,
+        }
+    }
+}
+
+/// The lines of `parts` (a heading and its items each), the items wrapped to `room`.
+fn lay_out(
+    ui: &Ui,
+    lines: &mut Vec<Line>,
+    parts: &[(&'static str, &'static [&'static str])],
+    room: f32,
+) {
+    for &(heading, items) in parts {
+        if items.is_empty() {
+            continue;
+        }
+        if !lines.is_empty() {
+            lines.push(Line::Gap(14.0));
+        }
+        lines.push(Line::Heading(heading));
+        for item in items {
+            let mut line = String::new();
+            let mut first = true;
+            for word in item.split(' ') {
+                let next = if line.is_empty() {
+                    word.to_owned()
+                } else {
+                    format!("{line} {word}")
+                };
+                if !line.is_empty() && ui.measure(Face::Regular, ITEM[0], &next) > room {
+                    let full = std::mem::replace(&mut line, word.to_owned());
+                    lines.push(Line::Item(full, first));
+                    first = false;
+                } else {
+                    line = next;
+                }
+            }
+            lines.push(Line::Item(line, first));
+            lines.push(Line::Gap(6.0));
+        }
+    }
 }
 
 /// The card is a big one: it is the only thing on screen, and it is read once.
@@ -86,6 +149,10 @@ const ITEM_INDENT: f32 = 22.0;
 const TITLE: [f32; 2] = [26.0, 46.0];
 const HEADING: [f32; 2] = [19.0, 32.0];
 const ITEM: [f32; 2] = [17.0, 26.0];
+/// An earlier release's title: a rule, then the words a little larger than a heading's.
+const EARLIER: [f32; 2] = [21.0, 50.0];
+/// What the card says beside its button while notes are below what shows.
+const MORE: &str = "Scroll down for more";
 
 impl Game<'_> {
     /// The notes to show now: over the title's main page only, and not over the catalog or the
@@ -119,44 +186,26 @@ impl Game<'_> {
             ("New", notes.new),
             ("Fixed", notes.fixed),
         ];
-        for (heading, items) in parts {
-            if items.is_empty() {
-                continue;
-            }
-            if !lines.is_empty() {
-                lines.push(Line::Gap(14.0));
-            }
-            lines.push(Line::Heading(heading));
-            for item in items {
-                let mut line = String::new();
-                let mut first = true;
-                for word in item.split(' ') {
-                    let next = if line.is_empty() {
-                        word.to_owned()
-                    } else {
-                        format!("{line} {word}")
-                    };
-                    if !line.is_empty() && ui.measure(Face::Regular, ITEM[0], &next) > room {
-                        let full = std::mem::replace(&mut line, word.to_owned());
-                        lines.push(Line::Item(full, first));
-                        first = false;
-                    } else {
-                        line = next;
-                    }
-                }
-                lines.push(Line::Item(line, first));
-                lines.push(Line::Gap(6.0));
-            }
+        lay_out(&ui, &mut lines, &parts, room);
+        if let Some(earlier) = &notes.earlier {
+            lines.push(Line::Gap(12.0));
+            lines.push(Line::Earlier(earlier.heading));
+            let parts = [("New", earlier.new), ("Fixed", earlier.fixed)];
+            lay_out(&ui, &mut lines, &parts, room);
         }
-        let body: f32 = lines
-            .iter()
-            .map(|line| match line {
-                Line::Heading(_) => HEADING[1],
-                Line::Item(..) => ITEM[1],
-                Line::Gap(gap) => *gap,
-            })
-            .sum();
-        let card_h = PAD + TITLE[1] + body + 16.0 + BUTTON[1] + PAD;
+        let body: f32 = lines.iter().map(Line::height).sum();
+        // The title above the notes and the button under them stay; the notes take what is
+        // left of the screen, and scroll when they are taller.
+        let around = PAD + TITLE[1] + 16.0 + BUTTON[1] + PAD;
+        let card_h = (around + body).min(h - 16.0).max(around + ITEM[1]);
+        let view = card_h - around;
+        let most = (body - view).max(0.0);
+        let scroll = {
+            let mut card = card();
+            card.most = most;
+            card.scroll = card.scroll.clamp(0.0, most);
+            card.scroll
+        };
         let (x, y) = ((w - card_w) / 2.0, ((h - card_h) / 2.0).max(8.0));
         ui.rounded(x, y, card_w, card_h, 14.0, color::bg());
         ui.border(x, y, card_w, card_h, 14.0, color::border());
@@ -169,37 +218,59 @@ impl Game<'_> {
             color::text(),
             &title,
         );
-        let mut ty = y + PAD + TITLE[1];
-        for line in &lines {
-            match line {
-                Line::Heading(words) => {
-                    ui.text(
-                        Face::Semibold,
-                        HEADING[0],
-                        x + PAD,
-                        ty,
-                        color::text(),
-                        words,
-                    );
-                    ty += HEADING[1];
-                }
-                Line::Item(words, first) => {
-                    if *first {
-                        ui.rounded(x + PAD + 3.0, ty + 9.0, 6.0, 6.0, 3.0, color::ACCENT);
+        let top = y + PAD + TITLE[1];
+        ui.clipped([x, top, card_w, view], |ui| {
+            let mut ty = top - scroll;
+            for line in &lines {
+                let height = line.height();
+                // Only what shows, whole or in part.
+                if ty + height > top && ty < top + view {
+                    match line {
+                        Line::Heading(words) => {
+                            ui.text(
+                                Face::Semibold,
+                                HEADING[0],
+                                x + PAD,
+                                ty,
+                                color::text(),
+                                words,
+                            );
+                        }
+                        Line::Earlier(words) => {
+                            ui.fill(x + PAD, ty + 6.0, card_w - 2.0 * PAD, 1.0, color::border());
+                            ui.text(
+                                Face::Semibold,
+                                EARLIER[0],
+                                x + PAD,
+                                ty + 16.0,
+                                color::text(),
+                                words,
+                            );
+                        }
+                        Line::Item(words, first) => {
+                            if *first {
+                                ui.rounded(x + PAD + 3.0, ty + 9.0, 6.0, 6.0, 3.0, color::ACCENT);
+                            }
+                            let left = x + PAD + ITEM_INDENT;
+                            ui.text(Face::Regular, ITEM[0], left, ty, color::MUTED, words);
+                        }
+                        Line::Gap(_) => {}
                     }
-                    let left = x + PAD + ITEM_INDENT;
-                    ui.text(Face::Regular, ITEM[0], left, ty, color::MUTED, words);
-                    ty += ITEM[1];
                 }
-                Line::Gap(gap) => ty += gap,
+                ty += height;
             }
-        }
+        });
         let button = [
             x + card_w - PAD - BUTTON[0],
             y + card_h - PAD - BUTTON[1],
             BUTTON[0],
             BUTTON[1],
         ];
+        // More notes are below what shows: said beside the button until the end is reached.
+        if scroll < most - 1.0 {
+            let ty = button[1] + (BUTTON[1] - 15.0) / 2.0 - 3.0;
+            ui.text(Face::Regular, 15.0, x + PAD, ty, color::MUTED, MORE);
+        }
         // Pale until it answers.
         let fill = if ready {
             color::ACCENT
@@ -234,25 +305,44 @@ impl Game<'_> {
             p[0] >= r[0] && p[0] <= r[0] + r[2] && p[1] >= r[1] && p[1] <= r[1] + r[3]
         });
         let ready = card.since.is_some_and(|since| since.elapsed() >= HOLD);
+        let drags = card.drag.is_some_and(|(id, _)| id == touch.id);
         match touch.phase {
             TouchPhase::Started => {
                 if on_button && ready {
                     card.finger = Some(touch.id);
+                } else if !on_button && card.drag.is_none() {
+                    // Anywhere else a finger takes hold of the notes.
+                    card.drag = Some((touch.id, p[1]));
                 }
             }
-            TouchPhase::Moved => {}
+            TouchPhase::Moved => {
+                if let Some((id, last)) = card.drag
+                    && drags
+                {
+                    card.scroll = (card.scroll + last - p[1]).clamp(0.0, card.most);
+                    card.drag = Some((id, p[1]));
+                }
+            }
             TouchPhase::Cancelled => {
                 if card.finger == Some(touch.id) {
                     card.finger = None;
                 }
+                if drags {
+                    card.drag = None;
+                }
             }
             TouchPhase::Ended => {
+                if drags {
+                    card.drag = None;
+                }
                 if card.finger == Some(touch.id) {
                     card.finger = None;
                     if on_button {
                         card.open = false;
                         card.since = None;
                         card.button = None;
+                        card.scroll = 0.0;
+                        card.drag = None;
                         if let Err(e) = std::fs::write(seen_path(), notes.version) {
                             log::warn!("Horizon PE: notes of {} show again: {e}", notes.version);
                         }
@@ -302,6 +392,8 @@ impl Game<'_> {
             card.open = true;
             card.since = None;
             card.finger = None;
+            card.scroll = 0.0;
+            card.drag = None;
         }
         true
     }
