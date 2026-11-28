@@ -47,9 +47,9 @@ Pick one. They are the same game; each adds to the one before it.
 
 | Edition | For you if | Download |
 | --- | --- | --- |
-| **Horizon PE** | You play alone, on servers, or with friends by invite code | [**1.1.0**](https://github.com/shopifygav222/horizon-pocket-edition-ios/releases/download/v1.1.0/HorizonPE-1.1.0.ipa) |
-| **Shared Worlds** | Your group wants one world any of you can open, and voice chat in it | [**1.1.0**](https://github.com/shopifygav222/horizon-pocket-edition-ios/releases/download/v1.1.0-shared-worlds/HorizonPE-1.1.0-SharedWorlds.ipa) |
-| **Shared Worlds + Mods** | You want that, plus 15 mods ready from the first start | [**1.1.0**](https://github.com/shopifygav222/horizon-pocket-edition-ios/releases/download/v1.1.0-shared-worlds-mods/HorizonPE-1.1.0-SharedWorlds-Mods.ipa) |
+| **Horizon PE** | You play alone, on servers, or with friends by invite code | [**1.1.1**](https://github.com/shopifygav222/horizon-pocket-edition-ios/releases/download/v1.1.1/HorizonPE-1.1.1.ipa) |
+| **Shared Worlds** | Your group wants one world any of you can open, and voice chat in it | [**1.1.1**](https://github.com/shopifygav222/horizon-pocket-edition-ios/releases/download/v1.1.1-shared-worlds/HorizonPE-1.1.1-SharedWorlds.ipa) |
+| **Shared Worlds + Mods** | You want that, plus 15 mods ready from the first start | [**1.1.1**](https://github.com/shopifygav222/horizon-pocket-edition-ios/releases/download/v1.1.1-shared-worlds-mods/HorizonPE-1.1.1-SharedWorlds-Mods.ipa) |
 
 You can switch later: install another edition over the app and your worlds, settings and
 accounts stay.
@@ -98,14 +98,14 @@ accounts stay.
 **In the Control Hub** you can move, resize, recolour or hide any button, and change the button
 size, the hotbar size, the look sensitivity and the left-handed layout.
 
-**Hitbox size** (Options > Controls > Touch, from 1.1.1) makes fighting with a thumb easier: raise
+**Hitbox size** (Options > Controls > Touch) makes fighting with a thumb easier: raise
 it above 100% (up to 225%) and an attack that just misses a player or a creature still hits it. It
 is off until you raise it, and your reach stays the same. It works in your own worlds. On a server
 it works only if you also turn on **On servers too**, beside it: a server can treat it as cheating
 and kick or ban you, and one with anti-cheat may not count those hits at all. That risk is yours
 to take.
 
-**Your own music keeps playing** (from 1.1.1): start it in another app, then open the game. The
+**Your own music keeps playing:** start it in another app, then open the game. The
 game's sliders in Options > Music & Sounds set how loud the game is beside it.
 
 A controller, keyboard or mouse works as soon as you use it; the touch controls step aside.
