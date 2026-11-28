@@ -31,6 +31,10 @@ on:
         description: The second
         type: string
         default: ""
+      staged:
+        description: "Instead: two runs' ids (comma between) whose `stage` jobs applied the built-in mods: is their source the same, file for file?"
+        type: string
+        default: ""
   push:
     branches: [main, "mod-builder-**"]
     paths:
@@ -96,8 +100,49 @@ jobs:
           done
           python3 tools/ci/mod_builder.py compare "$RUNNER_TEMP/$FIRST.ipa" "$RUNNER_TEMP/$SECOND.ipa"
 
+  # The Mods edition's source is made by a `stage` job in every run (the fifteen built-in mods
+  # applied to the release's source). A build from the kept game is fast only if that job makes
+  # the same files each time: two runs' results, compared as the builder compares a checkout
+  # with the kept game (snapshot one, restore the other).
+  staged:
+    if: ${{ inputs.staged != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compare the two staged sources
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STAGED: ${{ inputs.staged }}
+        run: |
+          set -euo pipefail
+          [[ "$STAGED" =~ ^[0-9]{6,20},[0-9]{6,20}$ ]] || { echo "::error::two run ids, a comma between"; exit 1; }
+          n=0
+          for run in ${STAGED//,/ }; do
+            n=$((n + 1))
+            gh run download "$run" --repo "$GITHUB_REPOSITORY" --name staged-source --dir "$RUNNER_TEMP/staged-$n"
+            mkdir -p "$RUNNER_TEMP/source-$n"
+            tar -xzf "$RUNNER_TEMP/staged-$n/staged-source.tar.gz" -C "$RUNNER_TEMP/source-$n"
+            echo "run $run: $(find "$RUNNER_TEMP/source-$n" -type f | wc -l) files, $(cat "$RUNNER_TEMP/staged-$n/names.txt")"
+          done
+          cmp "$RUNNER_TEMP/staged-1/native-mods.json" "$RUNNER_TEMP/staged-2/native-mods.json" \
+            && echo "native-mods.json: the same" || echo "::warning::native-mods.json differs"
+          python3 tools/ci/mod_builder.py snapshot "$RUNNER_TEMP/source-1" "$RUNNER_TEMP/manifest.json"
+          python3 tools/ci/mod_builder.py restore "$RUNNER_TEMP/source-2" "$RUNNER_TEMP/manifest.json" | tee "$RUNNER_TEMP/restore.txt"
+          if grep -q '; 0 changed, 0 new, 0 gone$' "$RUNNER_TEMP/restore.txt"; then
+            echo "::notice::the two staged sources are the same, file for file"
+          else
+            echo "::error::the two staged sources differ: a build of the Mods edition from the kept game would compile what read those files"
+            exit 1
+          fi
+
   base:
-    if: ${{ inputs.first == '' }}
+    if: ${{ inputs.first == '' && inputs.staged == '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
