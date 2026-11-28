@@ -635,12 +635,13 @@ jobs:
           cp "$RUNNER_TEMP/catalog-mods.json" "$app/catalog-mods.json"
           ( cd game && zip -qry "$RUNNER_TEMP/proof/second.ipa" Payload )
           passed "the app is bundled"
-          python3 "$BUILDER" compare "$RUNNER_TEMP/proof/first.ipa" "$RUNNER_TEMP/proof/second.ipa" | tee "$RUNNER_TEMP/proof/compare.txt"
-          # The two programs are one: the same source, the same kept game, the same mods.
-          if cmp -s "$RUNNER_TEMP/proof/first.ipa" "$RUNNER_TEMP/proof/second.ipa" \
-             || grep -q ' 0 differ\.' "$RUNNER_TEMP/proof/compare.txt"; then
+          # The two apps are one: the same source, the same kept game, the same mods.
+          if python3 "$BUILDER" compare "$RUNNER_TEMP/proof/first.ipa" "$RUNNER_TEMP/proof/second.ipa" --same \
+               > "$RUNNER_TEMP/proof/compare.txt"; then
+            cat "$RUNNER_TEMP/proof/compare.txt"
             echo "::notice::fresh machine: its app is the first build's, file for file"
           else
+            cat "$RUNNER_TEMP/proof/compare.txt"
             echo "::error::the build from the kept game is not the first build's app"
             exit 1
           fi

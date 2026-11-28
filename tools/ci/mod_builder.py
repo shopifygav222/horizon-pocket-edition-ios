@@ -31,7 +31,8 @@ compiled game compiles again exactly what a build from nothing would have compil
     unpack FROM [--target DIR] [--cargo-home DIR] [--app DIR]
     log FILE                 stdin (cargo build -v) to FILE, and on without the command lines
     summary FILE TITLE [--allow REGEX] [--strict]   what that build compiled, and why
-    compare A.ipa B.ipa      what differs between two builds of the app
+    compare A.ipa B.ipa [--same]   what differs between two builds of the app (with --same:
+                             exit 1 unless they hold the same, file for file)
     --self-test
 """
 
@@ -464,9 +465,29 @@ def shown(data: bytes) -> str:
     return "".join(chr(c) if 32 <= c < 127 else "." for c in data)
 
 
-def compare(first: Path, second: Path) -> str:
-    """What differs between two .ipa files, as a report: files only one has, files that differ,
-    and for the program itself how many bytes differ and what they spell."""
+def inner(x: bytes, y: bytes) -> list[str] | None:
+    """Two archives inside the app (its game tables), file by file: what differs between what
+    they hold, or None when one of them is no archive. Two archives of the same files are other
+    bytes when they were packed at another minute."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(x)) as a, zipfile.ZipFile(io.BytesIO(y)) as b:
+            one = {i.filename: (i.CRC, i.file_size) for i in a.infolist() if not i.is_dir()}
+            two = {i.filename: (i.CRC, i.file_size) for i in b.infolist() if not i.is_dir()}
+    except zipfile.BadZipFile:
+        return None
+    found = [f"only in the first: {name}" for name in sorted(set(one) - set(two))]
+    found += [f"only in the second: {name}" for name in sorted(set(two) - set(one))]
+    found += [f"differs: {name}" for name in sorted(set(one) & set(two)) if one[name] != two[name]]
+    return found
+
+
+def compare(first: Path, second: Path) -> tuple[str, int]:
+    """What differs between two .ipa files, as a report, and how many files differ in what they
+    hold: files only one has, files whose content is another. A property list with the same
+    keys and values, and an archive of the same files, are the same content in other bytes
+    (the order a tool wrote them in, the minute they were packed), and are said so. For the
+    program itself: how many bytes differ and what they spell."""
+    real = 0
     with zipfile.ZipFile(first) as a, zipfile.ZipFile(second) as b:
         one = {i.filename: i for i in a.infolist() if not i.is_dir()}
         two = {i.filename: i for i in b.infolist() if not i.is_dir()}
@@ -475,32 +496,49 @@ def compare(first: Path, second: Path) -> str:
         for label, names in (("Only in the first", sorted(set(one) - set(two))),
                              ("Only in the second", sorted(set(two) - set(one)))):
             if names:
+                real += len(names)
                 lines += ["", f"{label}: " + ", ".join(names[:30])]
         differing = []
         for name in sorted(set(one) & set(two)):
             if one[name].CRC == two[name].CRC and one[name].file_size == two[name].file_size:
                 continue
             differing.append(name)
-        lines += ["", f"{len(set(one) & set(two)) - len(differing)} files are the same, "
-                      f"{len(differing)} differ."]
+        lines += ["", f"{len(set(one) & set(two)) - len(differing)} files are the same byte for byte, "
+                      f"{len(differing)} are other bytes."]
         for name in differing:
             x, y = a.read(name), b.read(name)
             lines += ["", f"**{name}**: {len(x)} bytes against {len(y)}"]
-            if name.endswith("Info.plist"):
+            if name.endswith(".plist"):
                 try:
                     p, q = plistlib.loads(x), plistlib.loads(y)
-                    for key in sorted(set(p) | set(q)):
-                        if p.get(key) != q.get(key):
-                            lines.append(f"- {key}: {p.get(key)!r} against {q.get(key)!r}")
+                    keys = [key for key in sorted(set(p) | set(q)) if p.get(key) != q.get(key)]
+                    for key in keys:
+                        lines.append(f"- {key}: {p.get(key)!r} against {q.get(key)!r}")
+                    if keys:
+                        real += 1
+                    else:
+                        lines.append("- the same keys and values, written in another order")
                 except Exception as error:  # A plist that does not read is only reported.
+                    real += 1
                     lines.append(f"- does not read: {error}")
-            elif len(x) == len(y):
+                continue
+            held = inner(x, y) if name.endswith(".zip") else None
+            if held is not None:
+                if held:
+                    real += 1
+                    lines += [f"- {line}" for line in held[:40]]
+                else:
+                    lines.append("- an archive of the same files, each the same: packed at another time")
+                continue
+            real += 1
+            if len(x) == len(y):
                 count, found = ranges(x, y)
                 lines.append(f"- {count} bytes differ, in {len(found)}{'+' if len(found) >= 60 else ''} places")
                 for start, end in found[:40]:
                     lo, hi = max(0, start - 24), min(len(x), end + 25)
                     lines.append(f"  - at {start:#x}, {end - start + 1} bytes: `{shown(x[lo:hi])}` / `{shown(y[lo:hi])}`")
-    return "\n".join(lines) + "\n"
+    lines += ["", f"{real} files differ in what they hold."]
+    return "\n".join(lines) + "\n", real
 
 
 def self_test() -> None:
@@ -584,11 +622,31 @@ def self_test() -> None:
                     z.writestr(name, b"x")
         ipa(work / "a.ipa", b"\0" * 100 + b"key=aaaa" + b"\0" * 100, "7")
         ipa(work / "b.ipa", b"\0" * 100 + b"key=bbbb" + b"\0" * 100, "8", ["Payload/HorizonPE.app/extra"])
-        report = compare(work / "a.ipa", work / "b.ipa")
+        report, real = compare(work / "a.ipa", work / "b.ipa")
         assert "Only in the second: Payload/HorizonPE.app/extra" in report, report
-        assert "1 files are the same, 2 differ" in report, report
+        assert "1 files are the same byte for byte, 2 are other bytes" in report, report
         assert "4 bytes differ, in 1 places" in report and "key=aaaa" in report, report
         assert "CFBundleVersion: '7' against '8'" in report, report
+        assert real == 3 and "3 files differ in what they hold" in report, report
+        # The same content in other bytes is not another app: a property list a tool wrote in
+        # another order, an archive of the same files packed at another minute.
+        def packed(path: Path, plist: bytes, when: tuple, table: bytes = b"table"):
+            tables = io.BytesIO()
+            with zipfile.ZipFile(tables, "w") as z:
+                z.writestr(zipfile.ZipInfo("tables/blocks.bin", when), table)
+            with zipfile.ZipFile(path, "w") as z:
+                z.writestr("Payload/HorizonPE.app/HorizonPE", b"program")
+                z.writestr("Payload/HorizonPE.app/Info.plist", plist)
+                z.writestr("Payload/HorizonPE.app/assets/engine-data.zip", tables.getvalue())
+        both = {"CFBundleVersion": "9", "CFBundleName": "Horizon PE"}
+        packed(work / "c.ipa", plistlib.dumps(both, fmt=plistlib.FMT_XML, sort_keys=True), (2026, 1, 1, 0, 0, 0))
+        packed(work / "d.ipa", plistlib.dumps(both, fmt=plistlib.FMT_XML, sort_keys=False), (2026, 1, 2, 0, 0, 0))
+        report, real = compare(work / "c.ipa", work / "d.ipa")
+        assert real == 0, report
+        assert "written in another order" in report and "packed at another time" in report, report
+        packed(work / "e.ipa", plistlib.dumps(both, fmt=plistlib.FMT_XML, sort_keys=True), (2026, 1, 1, 0, 0, 0), b"other")
+        report, real = compare(work / "c.ipa", work / "e.ipa")
+        assert real == 1 and "differs: tables/blocks.bin" in report, report
 
     # A kept game is this repository's own run's, the newest still kept.
     def kept(ident, created, run, expired=False, name="game-base-abc-r1"):
@@ -726,12 +784,14 @@ def main() -> None:
         strict = "--strict" in rest
         allow = rest[rest.index("--allow") + 1] if "--allow" in rest else None
         sys.exit(summary(Path(args[1]), args[2], allow, strict))
-    elif len(args) == 3 and args[0] == "compare":
-        report = compare(Path(args[1]), Path(args[2]))
+    elif len(args) in (3, 4) and args[0] == "compare" and args[3:] in ([], ["--same"]):
+        report, real = compare(Path(args[1]), Path(args[2]))
         print(report)
         if os.environ.get("GITHUB_STEP_SUMMARY"):
             with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as out:
                 out.write(report + "\n")
+        # `--same`: the two must hold the same, file for file.
+        sys.exit(1 if args[3:] and real else 0)
     else:
         sys.exit(__doc__)
 
