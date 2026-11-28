@@ -324,37 +324,26 @@ jobs:
           python3 "$BUILDER" identity "$RUNNER_TEMP/identity.json"
           cat "$RUNNER_TEMP/identity.json"
           found=false
-          listed=""
-          if [ "$FRESH" != true ]; then
-            listed=$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=$BASE&per_page=30" --jq \
-              '[.artifacts[] | select(.expired | not) | select(.workflow_run.head_repository_id == .workflow_run.repository_id)] | sort_by(.created_at) | reverse | .[0:2][] | "\(.id) \(.workflow_run.id)"' \
-              || true)
-          fi
-          while read -r artifact run; do
-            [ -n "$artifact" ] || continue
-            made=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run" --jq '"\(.path) \(.event)"' || true)
-            case "$made" in
-              ".github/workflows/mod-builder.yml workflow_dispatch" | ".github/workflows/mod-builder.yml@"*" workflow_dispatch") ;;
-              *) echo "::warning::$BASE of run $run was not made by the mod builder ($made): left alone"; continue ;;
-            esac
-            rm -rf "$RUNNER_TEMP/base" && mkdir -p "$RUNNER_TEMP/base"
-            started=$(date +%s)
-            if gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact/zip" > "$RUNNER_TEMP/base.zip" \
-               && unzip -q "$RUNNER_TEMP/base.zip" -d "$RUNNER_TEMP/base" \
-               && rm -f "$RUNNER_TEMP/base.zip" \
-               && python3 "$BUILDER" same "$RUNNER_TEMP/base/identity.json" "$RUNNER_TEMP/identity.json" \
+          started=$(date +%s)
+          if [ "$FRESH" = true ]; then
+            echo "::notice::asked to compile the game from nothing"
+          elif python3 "$BUILDER" take "$BASE" "$RUNNER_TEMP/base" \
+                 --workflow .github/workflows/mod-builder.yml --event workflow_dispatch; then
+            if python3 "$BUILDER" same "$RUNNER_TEMP/base/identity.json" "$RUNNER_TEMP/identity.json" \
                && python3 "$BUILDER" unpack "$RUNNER_TEMP/base" --target target --cargo-home "$HOME/.cargo" --app "$RUNNER_TEMP/game-app" \
                && test -d "$RUNNER_TEMP/game-app/HorizonPE.app" \
                && python3 "$BUILDER" restore . "$RUNNER_TEMP/base/manifest.json"; then
               found=true
-              echo "::notice::the compiled game $BASE (run $run) is taken, in $(( $(date +%s) - started )) s"
-              break
+              echo "::notice::the compiled game $BASE is taken, in $(( $(date +%s) - started )) s"
+            else
+              echo "::warning::the kept game $BASE is not for this machine or did not read: the game is compiled"
+              # Nothing half taken stays.
+              rm -rf target "$HOME/.cargo/registry" "$HOME/.cargo/git" "$RUNNER_TEMP/game-app"
             fi
-            echo "::warning::$BASE of run $run is not for this machine or did not read: the game is compiled"
-            # Nothing half taken stays.
-            rm -rf target "$HOME/.cargo/registry" "$HOME/.cargo/git" "$RUNNER_TEMP/game-app"
-          done <<< "$listed"
-          rm -rf "$RUNNER_TEMP/base.zip" "$RUNNER_TEMP"/base/*.tar.*
+          else
+            echo "::notice::no compiled game $BASE is kept: the game is compiled, and kept"
+          fi
+          rm -rf "$RUNNER_TEMP"/base/*.tar.*
           echo "found=$found" >> "$GITHUB_OUTPUT"
           df -h / | tail -n 1
       # A build from nothing starts where ios.yml's does: the plain build's cache of the registry

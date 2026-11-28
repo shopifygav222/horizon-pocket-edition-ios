@@ -16,8 +16,15 @@
 //
 // Bindings (wrangler.toml, README.md): GITHUB_TOKEN (secret), REPO, LIMITS (KV), and optionally
 // PER_DEVICE_PER_DAY, PER_DAY, MAX_MODS.
+//
+// Two workflows build: `mod-build.yml`, at the release's own tag, compiles the whole game each
+// time; `mod-builder.yml`, on a branch, compiles a release's game once and after that only the
+// mods (README.md "The mod builder"). Which releases the second one builds is the repository's
+// own word, packaging/ios/mod-builder.json on its main branch: without that file, or for a
+// release it does not name, everything is the first workflow's, as it always was.
 
 export const WORKFLOW = "mod-build.yml";
+export const BUILDER = "mod-builder.yml";
 // This repository's release tags, the three editions': the workflow at that tag builds itself.
 const TAG = /^v\d{1,3}\.\d{1,3}\.\d{1,3}(-shared-worlds(-mods)?)?$/;
 // A catalog mod and its version, as the registry's index names them.
@@ -37,6 +44,16 @@ const BUILDABLE_FRESH_MS = 10 * 60 * 1000;
 const MOST_ATTEMPTS = 3;
 /// The lists read, by repository: { at, ids }.
 export const buildableLists = new Map();
+// Which releases the mod builder builds (packaging/ios/mod-builder.json): read at most this often,
+// so turning it on or off is felt within minutes.
+const BUILDER_FRESH_MS = 2 * 60 * 1000;
+// A branch the builder runs on: a plain name.
+const BRANCH = /^[A-Za-z0-9._-]{1,100}$/;
+// Which workflow a build was started with is remembered this long (seconds): its run is then
+// looked for in that workflow alone.
+const STARTED_BY_TTL = 24 * 60 * 60;
+/// The builder's word read, by repository: { at, plan }, `plan` null when it builds nothing.
+export const builderPlans = new Map();
 
 const json = (body, status = 200) =>
   new Response(JSON.stringify(body), {
@@ -95,6 +112,39 @@ async function buildable(repo, fetcher, now) {
   }
 }
 
+/// What the repository says the mod builder builds: { ref, tags }, the branch it runs on and the
+/// releases it builds. Null when it says nothing (no file, or one that does not read): then no
+/// build is the builder's. A file that can't be fetched this once leaves what was known.
+async function builder(repo, fetcher, now) {
+  const known = builderPlans.get(repo);
+  if (known && now - known.at < BUILDER_FRESH_MS) return known.plan;
+  const keep = (plan) => {
+    builderPlans.set(repo, { at: now, plan });
+    return plan;
+  };
+  try {
+    const response = await fetcher(
+      `https://raw.githubusercontent.com/${repo}/main/packaging/ios/mod-builder.json`,
+      { headers: { "user-agent": "horizon-pe-mod-builds" } },
+    );
+    if (response.status === 404) return keep(null);
+    if (!response.ok) return known?.plan ?? null;
+    const said = await response.json();
+    const tags = Array.isArray(said?.tags) ? said.tags : null;
+    if (
+      typeof said?.ref !== "string" ||
+      !BRANCH.test(said.ref) ||
+      !tags ||
+      !tags.every((tag) => typeof tag === "string" && TAG.test(tag))
+    ) {
+      return keep(null);
+    }
+    return keep({ ref: said.ref, tags: new Set(tags) });
+  } catch {
+    return known?.plan ?? null;
+  }
+}
+
 /// Why these mods are not built, when one of them is a mod no build takes; else null.
 export function unbuildable(mods, ids) {
   if (!ids) return null;
@@ -132,6 +182,14 @@ function github(s, fetcher) {
     });
 }
 
+/// Whether a run of this repository's own code made the artifact. A pull request from a fork
+/// runs the fork's workflows, which may keep a file under any name: such a file is nobody's
+/// build. (GitHub says where a run's code came from; a file it says nothing of is taken as before.)
+const ours = (a) =>
+  !a.workflow_run ||
+  a.workflow_run.head_repository_id == null ||
+  a.workflow_run.head_repository_id === a.workflow_run.repository_id;
+
 /// The finished build's artifact, if GitHub still keeps it.
 async function artifact(api, key) {
   const response = await api(`/actions/artifacts?name=mod-build-${key}&per_page=10`);
@@ -139,19 +197,35 @@ async function artifact(api, key) {
   const { artifacts = [] } = await response.json();
   return (
     artifacts
-      .filter((a) => !a.expired && a.name === `mod-build-${key}`)
+      .filter((a) => !a.expired && a.name === `mod-build-${key}` && ours(a))
       .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))[0] ?? null
   );
 }
 
-/// The newest run of the workflow for this key, among the workflow's last hundred.
-async function run(api, key) {
+/// The newest run of `workflow` for this key, among the workflow's last hundred.
+async function runOf(api, key, workflow) {
   const response = await api(
-    `/actions/workflows/${WORKFLOW}/runs?event=workflow_dispatch&per_page=100`,
+    `/actions/workflows/${workflow}/runs?event=workflow_dispatch&per_page=100`,
   );
+  // The builder's workflow may not be there (a repository that never had it): then it has no runs.
+  if (response.status === 404 && workflow === BUILDER) return null;
   if (!response.ok) throw new Error(`GitHub answered ${response.status} for the builds`);
   const { workflow_runs: runs = [] } = await response.json();
   return runs.find((r) => r.display_title === `mod-build ${key}`) ?? null;
+}
+
+/// The newest run for this key. The workflow it was started with is remembered for a day
+/// (`w:<key>`) and looked in alone; a build nobody remembers is looked for in the release's own
+/// workflow, and in the builder's too when the repository has the builder's word (`plan`, asked
+/// for only then).
+async function run(api, kv, key, plan) {
+  const by = kv ? await kv.get(`w:${key}`) : null;
+  if (by === "b") return runOf(api, key, BUILDER);
+  const own = await runOf(api, key, WORKFLOW);
+  if (by === "o" || !(await plan())) return own;
+  const built = await runOf(api, key, BUILDER);
+  if (!own || !built) return own ?? built;
+  return Date.parse(built.created_at) > Date.parse(own.created_at) ? built : own;
 }
 
 /// Why a run failed, in a line: the step that stopped it. `unstarted`: no step failed and a job
@@ -180,13 +254,13 @@ async function failure(api, id) {
   }
 }
 
-/// Where the build with this key stands.
-export async function state(api, kv, key) {
+/// Where the build with this key stands. `plan`: the mod builder's word, asked for when needed.
+export async function state(api, kv, key, plan = async () => null) {
   const file = await artifact(api, key);
   if (file) {
     return { key, state: "ready", size: file.size_in_bytes, expires: file.expires_at };
   }
-  const latest = await run(api, key);
+  const latest = await run(api, kv, key, plan);
   if (latest && latest.status !== "completed") {
     return {
       key,
@@ -263,7 +337,8 @@ async function start(request, env, s, api, fetcher, now) {
   if (not) return refuse(400, not);
   const key = await buildKey(tag, read.mods);
   const kv = env.LIMITS;
-  const known = await state(api, kv, key);
+  const plan = () => builder(s.repo, fetcher, now);
+  const known = await state(api, kv, key, plan);
   if (known.state === "ready" || known.state === "queued" || known.state === "building") {
     return json(known);
   }
@@ -274,17 +349,34 @@ async function start(request, env, s, api, fetcher, now) {
   if (!kv) return refuse(503, "The build service is not set up (no LIMITS store).");
   const full = await allow(kv, s, device, now);
   if (full) return refuse(429, full);
+  const mods = read.mods.join(",");
+  const post = (workflow, body) =>
+    api(`/actions/workflows/${workflow}/dispatches`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  // A release the mod builder builds: its workflow, on its branch, told the release and that the
+  // build is a player's (`serve`: the file is then named as this Worker finds it).
+  const fast = await plan();
+  let by = "o";
+  let asked = null;
+  if (fast?.tags.has(tag)) {
+    asked = await post(BUILDER, { ref: fast.ref, inputs: { tag, mods, key, serve: "true" } });
+    if (asked.ok) by = "b";
+    // The builder can't be started: the release builds itself, as before.
+    else asked = null;
+  }
   // The workflow as the release itself has it, at the release's tag.
-  const asked = await api(`/actions/workflows/${WORKFLOW}/dispatches`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ ref: tag, inputs: { mods: read.mods.join(","), key } }),
-  });
+  if (!asked) asked = await post(WORKFLOW, { ref: tag, inputs: { mods, key } });
   if (asked.status === 404 || asked.status === 422) {
     return refuse(400, "This app's version has no builds with mods.");
   }
   if (!asked.ok) return refuse(502, `GitHub did not start the build (${asked.status}).`);
-  await kv.put(`k:${key}`, "1", { expirationTtl: STARTED_TTL });
+  await Promise.all([
+    kv.put(`k:${key}`, "1", { expirationTtl: STARTED_TTL }),
+    kv.put(`w:${key}`, by, { expirationTtl: STARTED_BY_TTL }),
+  ]);
   return json({ key, state: "queued" }, 202);
 }
 
@@ -319,7 +411,10 @@ export async function handle(request, env, fetcher = fetch, now = Date.now()) {
     }
     if (request.method !== "GET") return refuse(405, "A build is read with GET.");
     if (!KEY.test(parts[2])) return refuse(400, "That is not a build's key.");
-    if (parts.length === 3) return json(await state(api, env.LIMITS, parts[2]));
+    if (parts.length === 3) {
+      const plan = () => builder(s.repo, fetcher, now);
+      return json(await state(api, env.LIMITS, parts[2], plan));
+    }
     if (parts[3] === "ipa") return await file(api, parts[2]);
     return refuse(404, "No such address.");
   } catch (error) {

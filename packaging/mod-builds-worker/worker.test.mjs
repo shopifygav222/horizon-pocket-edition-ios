@@ -1,7 +1,15 @@
 // The mod builds Worker against a GitHub that is a table in memory: `node --test`.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildableLists, buildKey, handle, readMods, WORKFLOW } from "./worker.js";
+import {
+  BUILDER,
+  buildableLists,
+  builderPlans,
+  buildKey,
+  handle,
+  readMods,
+  WORKFLOW,
+} from "./worker.js";
 
 const REPO = "someone/horizon-pocket-edition-ios";
 const TAG = "v1.1.0-shared-worlds-mods";
@@ -24,8 +32,11 @@ function store() {
   };
 }
 
-/// GitHub's API for one repository: its artifacts, its workflow's runs, and what was asked of it.
+/// GitHub's API for one repository: its artifacts, its workflows' runs, and what was asked of it.
 /// `buildable`: the repository's list of the mods a build can take (none: the file can't be read).
+/// `builder`: the repository's word on the mod builder (packaging/ios/mod-builder.json; none: no
+/// such file), `builderRuns` that workflow's runs (none: the workflow is not there) and
+/// `builderDispatch` what starting it answers.
 function github({
   artifacts = [],
   runs = [],
@@ -33,16 +44,24 @@ function github({
   dispatch = 204,
   buildable = null,
   rerun = 201,
+  builder = null,
+  builderRuns = null,
+  builderDispatch = 204,
 } = {}) {
   const asked = [];
   const lists = [];
   const fetcher = async (url, init = {}) => {
     const { pathname, searchParams, hostname } = new URL(url);
     if (hostname === "raw.githubusercontent.com") {
-      // The public file: asked for without the token.
+      // The public files: asked for without the token.
       assert.equal(init.headers?.authorization, undefined);
-      assert.equal(pathname, `/${REPO}/main/packaging/ios/catalog-buildable.json`);
       lists.push(pathname);
+      if (pathname === `/${REPO}/main/packaging/ios/mod-builder.json`) {
+        if (builder === null) return new Response("not found", { status: 404 });
+        if (builder === "down") return new Response("try later", { status: 503 });
+        return typeof builder === "string" ? new Response(builder) : Response.json(builder);
+      }
+      assert.equal(pathname, `/${REPO}/main/packaging/ios/catalog-buildable.json`);
       if (buildable === null) return new Response("not found", { status: 404 });
       return typeof buildable === "string"
         ? new Response(buildable)
@@ -60,6 +79,13 @@ function github({
     }
     if (pathname === `${base}/workflows/${WORKFLOW}/dispatches`) {
       return new Response(null, { status: dispatch });
+    }
+    if (pathname === `${base}/workflows/${BUILDER}/runs`) {
+      if (builderRuns === null) return new Response("not found", { status: 404 });
+      return Response.json({ workflow_runs: builderRuns });
+    }
+    if (pathname === `${base}/workflows/${BUILDER}/dispatches`) {
+      return new Response(null, { status: builderDispatch });
     }
     if (/\/runs\/\d+\/rerun-failed-jobs$/.test(pathname)) {
       assert.equal(init.method, "POST");
@@ -80,7 +106,11 @@ function github({
   return { fetcher, asked, lists };
 }
 
-const env = (more = {}) => ({ REPO, GITHUB_TOKEN: "token", LIMITS: store(), ...more });
+/// A fresh service each time: what it read of the repository's files is forgotten.
+const env = (more = {}) => {
+  builderPlans.clear();
+  return { REPO, GITHUB_TOKEN: "token", LIMITS: store(), ...more };
+};
 
 const post = (body) =>
   new Request("https://builds.example/v1/build", { method: "POST", body: JSON.stringify(body) });
@@ -345,7 +375,7 @@ test("a mod no build takes is refused before a build is started or counted", asy
   // A mod of the list is built, in a newer version too; the list was read once for all of this.
   const fine = await handle(asking(["waymap@1.3.0", "appleskin@3.0.1"]), e, fetcher, NOW);
   assert.equal(fine.status, 202);
-  assert.equal(lists.length, 1);
+  assert.equal(lists.filter((path) => path.endsWith("/catalog-buildable.json")).length, 1);
   // Read again when it is old; a list that can't be read then leaves the one known.
   const later = NOW + 11 * 60 * 1000;
   const gone = github();
@@ -360,6 +390,229 @@ test("a mod no build takes is refused before a build is started or counted", asy
     assert.equal(open.status, 202, String(buildable));
   }
   buildableLists.clear();
+});
+
+const posts = (asked) => asked.filter((a) => a.method === "POST");
+const MODS = ["appleskin@3.0.1", "waymap@1.2.0"];
+
+test("without the builder's word every build is the release's own, as before", async () => {
+  // No file, a file that does not read, one that names no branch, one whose releases are not
+  // releases: nothing is the builder's.
+  for (const builder of [
+    null,
+    "<html>",
+    { tags: [TAG] },
+    { ref: "main" },
+    { ref: "main", tags: "all" },
+    { ref: "main", tags: [TAG, "main"] },
+    { ref: "feature/x", tags: [TAG] },
+    { ref: "main", tags: [] },
+    { ref: "main", tags: ["v1.1.0"] },
+  ]) {
+    const { fetcher, asked } = github({ builder, builderRuns: [] });
+    const e = env();
+    const response = await handle(asking(), e, fetcher, NOW);
+    assert.equal(response.status, 202, JSON.stringify(builder));
+    const { key } = await response.json();
+    const started = posts(asked);
+    assert.equal(started.length, 1);
+    assert.ok(started[0].pathname.endsWith(`/workflows/${WORKFLOW}/dispatches`));
+    assert.deepEqual(JSON.parse(started[0].body), {
+      ref: TAG,
+      inputs: { mods: MODS.join(","), key },
+    });
+    assert.equal(e.LIMITS.map.get(`w:${key}`), "o");
+  }
+});
+
+test("a release the builder builds is started with it, on its branch, as a player's build", async () => {
+  const { fetcher, asked, lists } = github({
+    builder: { ref: "main", tags: ["v1.1.1", TAG] },
+    builderRuns: [],
+  });
+  const e = env();
+  const response = await handle(asking(), e, fetcher, NOW);
+  assert.equal(response.status, 202);
+  const { key, state } = await response.json();
+  assert.equal(state, "queued");
+  // The same key as ever: the build is found by it whichever workflow made it.
+  assert.equal(key, await buildKey(TAG, MODS));
+  const started = posts(asked);
+  assert.equal(started.length, 1);
+  assert.ok(started[0].pathname.endsWith(`/workflows/${BUILDER}/dispatches`));
+  assert.deepEqual(JSON.parse(started[0].body), {
+    ref: "main",
+    inputs: { tag: TAG, mods: MODS.join(","), key, serve: "true" },
+  });
+  assert.equal(e.LIMITS.map.get(`w:${key}`), "b");
+  assert.equal(e.LIMITS.ttl.get(`w:${key}`), 24 * 60 * 60);
+  assert.equal(e.LIMITS.map.get(`d:2026-11-24:${DEVICE}`), "1");
+  // The repository's word is read once for a while, not for every request.
+  const again = await handle(asking(), e, fetcher, NOW + 5000);
+  assert.deepEqual(await again.json(), { key, state: "queued" });
+  assert.equal(posts(asked).length, 1);
+  assert.equal(lists.filter((path) => path.endsWith("/mod-builder.json")).length, 1);
+  // Another release, which the builder does not build: its own workflow, at its tag.
+  const other = await handle(
+    post({ tag: "v1.0.0", mods: MODS, device: DEVICE }),
+    e,
+    fetcher,
+    NOW + 6000,
+  );
+  assert.equal(other.status, 202);
+  const last = posts(asked).at(-1);
+  assert.ok(last.pathname.endsWith(`/workflows/${WORKFLOW}/dispatches`));
+  assert.equal(JSON.parse(last.body).ref, "v1.0.0");
+});
+
+test("the builder's word is read again after a while, and kept when it can't be read", async () => {
+  const on = github({ builder: { ref: "main", tags: [TAG] }, builderRuns: [] });
+  const e = env();
+  await handle(asking(), e, on.fetcher, NOW);
+  assert.ok(posts(on.asked)[0].pathname.endsWith(`/workflows/${BUILDER}/dispatches`));
+  // Minutes later the file can't be fetched: the builder stays on.
+  const down = github({ builder: "down", builderRuns: [] });
+  await handle(asking(["waymap@1.2.0"]), e, down.fetcher, NOW + 5 * 60 * 1000);
+  assert.ok(posts(down.asked)[0].pathname.endsWith(`/workflows/${BUILDER}/dispatches`));
+  // Later the file is gone (the builder was turned off): the release builds itself.
+  const off = github({ builder: null, builderRuns: [] });
+  await handle(asking(["appleskin@3.0.1"]), e, off.fetcher, NOW + 10 * 60 * 1000);
+  assert.ok(posts(off.asked)[0].pathname.endsWith(`/workflows/${WORKFLOW}/dispatches`));
+});
+
+test("when the builder can't be started the release builds itself", async () => {
+  for (const builderDispatch of [404, 422, 500]) {
+    const { fetcher, asked } = github({
+      builder: { ref: "main", tags: [TAG] },
+      builderRuns: [],
+      builderDispatch,
+    });
+    const e = env();
+    const response = await handle(asking(), e, fetcher, NOW);
+    assert.equal(response.status, 202, String(builderDispatch));
+    const { key } = await response.json();
+    const started = posts(asked);
+    assert.equal(started.length, 2);
+    assert.ok(started[0].pathname.endsWith(`/workflows/${BUILDER}/dispatches`));
+    assert.ok(started[1].pathname.endsWith(`/workflows/${WORKFLOW}/dispatches`));
+    assert.deepEqual(JSON.parse(started[1].body), {
+      ref: TAG,
+      inputs: { mods: MODS.join(","), key },
+    });
+    // Remembered as the release's own build, and counted once.
+    assert.equal(e.LIMITS.map.get(`w:${key}`), "o");
+    assert.equal(e.LIMITS.map.get(`d:2026-11-24:${DEVICE}`), "1");
+  }
+});
+
+test("a build the builder is making is found by its key, and only where it was started", async () => {
+  const key = await buildKey(TAG, MODS);
+  const running = {
+    id: 9,
+    display_title: `mod-build ${key}`,
+    status: "in_progress",
+    created_at: "2026-11-24T11:50:00Z",
+    run_started_at: "2026-11-24T11:51:00Z",
+  };
+  // Remembered as the builder's: its workflow alone is asked.
+  const mine = github({ builder: { ref: "main", tags: [TAG] }, builderRuns: [running] });
+  const e = env();
+  e.LIMITS.map.set(`w:${key}`, "b");
+  const during = await handle(get(`/v1/build/${key}`), e, mine.fetcher, NOW);
+  assert.deepEqual(await during.json(), { key, state: "building", since: "2026-11-24T11:51:00Z" });
+  assert.equal(mine.asked.filter((a) => a.pathname.endsWith(`/${WORKFLOW}/runs`)).length, 0);
+  assert.equal(mine.lists.length, 0);
+  // Remembered as the release's own: the builder's is not asked, nor the repository's word.
+  const own = github({ builder: { ref: "main", tags: [TAG] }, builderRuns: [running] });
+  const o = env();
+  o.LIMITS.map.set(`w:${key}`, "o");
+  const none = await handle(get(`/v1/build/${key}`), o, own.fetcher, NOW);
+  assert.deepEqual(await none.json(), { key, state: "none" });
+  assert.equal(own.asked.filter((a) => a.pathname.endsWith(`/${BUILDER}/runs`)).length, 0);
+  assert.equal(own.lists.length, 0);
+  // Nobody remembers (a day went by): both are asked, and the newer run is the build's.
+  const older = {
+    id: 5,
+    display_title: `mod-build ${key}`,
+    status: "completed",
+    conclusion: "failure",
+    created_at: "2026-11-24T09:00:00Z",
+    updated_at: "2026-11-24T09:30:00Z",
+  };
+  const both = github({
+    builder: { ref: "main", tags: [TAG] },
+    runs: [older],
+    builderRuns: [running],
+  });
+  const found = await handle(get(`/v1/build/${key}`), env(), both.fetcher, NOW);
+  assert.equal((await found.json()).state, "building");
+  // And a build asked for while the builder makes it is not started again.
+  const again = await handle(asking(), env(), both.fetcher, NOW);
+  assert.equal((await again.json()).state, "building");
+  assert.equal(posts(both.asked).length, 0);
+  // Without the builder's word, and with no such workflow, only the release's own run counts.
+  const before = github({ runs: [older] });
+  const failed = await handle(get(`/v1/build/${key}`), env(), before.fetcher, NOW);
+  assert.equal((await failed.json()).state, "failed");
+  assert.equal(before.asked.filter((a) => a.pathname.endsWith(`/${BUILDER}/runs`)).length, 0);
+  const absent = github({ builder: { ref: "main", tags: [TAG] }, runs: [older] });
+  const still = await handle(get(`/v1/build/${key}`), env(), absent.fetcher, NOW);
+  assert.equal((await still.json()).state, "failed");
+});
+
+test("a build GitHub had no machine for is started again in the builder too", async () => {
+  const key = await buildKey(TAG, MODS);
+  const { fetcher, asked } = github({
+    builder: { ref: "main", tags: [TAG] },
+    builderRuns: [
+      {
+        id: 31,
+        display_title: `mod-build ${key}`,
+        status: "completed",
+        conclusion: "failure",
+        run_attempt: 1,
+        created_at: "2026-11-24T11:00:00Z",
+        updated_at: "2026-11-24T11:45:00Z",
+      },
+    ],
+    jobs: { 31: [{ name: "Build the app", conclusion: "cancelled", steps: [] }] },
+  });
+  const e = env();
+  e.LIMITS.map.set(`w:${key}`, "b");
+  const response = await handle(get(`/v1/build/${key}`), e, fetcher, NOW);
+  assert.deepEqual(await response.json(), { key, state: "queued" });
+  const again = posts(asked);
+  assert.equal(again.length, 1);
+  assert.ok(again[0].pathname.endsWith("/runs/31/rerun-failed-jobs"));
+});
+
+test("a file a pull request's run kept under a build's name is nobody's build", async () => {
+  const key = await buildKey(TAG, MODS);
+  const file = (id, run) => ({
+    id,
+    name: `mod-build-${key}`,
+    expired: false,
+    created_at: `2026-11-24T11:5${id}:00Z`,
+    size_in_bytes: 1000 + id,
+    expires_at: "2026-12-01T11:58:00Z",
+    workflow_run: run,
+  });
+  // The newest is a fork's (its code came from another repository): the repository's own is the build.
+  const mixed = github({
+    artifacts: [
+      file(1, { id: 70, repository_id: 5, head_repository_id: 5 }),
+      file(2, { id: 71, repository_id: 5, head_repository_id: 99 }),
+    ],
+  });
+  const ready = await handle(get(`/v1/build/${key}`), env(), mixed.fetcher, NOW);
+  assert.equal((await ready.json()).size, 1001);
+  const link = await handle(get(`/v1/build/${key}/ipa`), env(), mixed.fetcher, NOW);
+  assert.equal(link.headers.get("location"), "https://files.example/1?sig=short");
+  // Only a fork's: there is no build, and none is handed out.
+  const forked = github({ artifacts: [file(2, { id: 71, repository_id: 5, head_repository_id: 99 })] });
+  const none = await handle(get(`/v1/build/${key}`), env(), forked.fetcher, NOW);
+  assert.deepEqual(await none.json(), { key, state: "none" });
+  assert.equal((await handle(get(`/v1/build/${key}/ipa`), env(), forked.fetcher, NOW)).status, 404);
 });
 
 test("a build nobody made, a wrong address and a service not set up say so", async () => {

@@ -79,7 +79,7 @@ jobs:
           ls -l "$RUNNER_TEMP/base"
       - uses: actions/upload-artifact@v4
         with:
-          name: mod-builder-check-base
+          name: mod-builder-check-base-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/base/
           retention-days: 1
           compression-level: 0
@@ -89,6 +89,10 @@ jobs:
     needs: base
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    permissions:
+      contents: read
+      # The kept game is looked for among the artifacts, as mod-builder.yml looks for one.
+      actions: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -97,13 +101,22 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev zstd
           bash tools/ci/rustup_install.sh --profile minimal
-      - uses: actions/download-artifact@v4
-        with:
-          name: mod-builder-check-base
-          path: ${{ runner.temp }}/base
       - name: Take the compiled game
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE: mod-builder-check-base-${{ github.run_id }}-${{ github.run_attempt }}
+          EVENT: ${{ github.event_name }}
         run: |
           set -euo pipefail
+          # Found as mod-builder.yml finds one: by name, among this repository's own runs of the
+          # workflow that makes them. And not under another workflow's name.
+          if python3 tools/ci/mod_builder.py take "$BASE" "$RUNNER_TEMP/other" \
+               --workflow .github/workflows/mod-builder.yml --event "$EVENT"; then
+            echo '::error::a kept game of another workflow was taken'
+            exit 1
+          fi
+          python3 tools/ci/mod_builder.py take "$BASE" "$RUNNER_TEMP/base" \
+            --workflow .github/workflows/mod-builder-check.yml --event "$EVENT"
           python3 tools/ci/mod_builder.py identity "$RUNNER_TEMP/identity.json"
           python3 tools/ci/mod_builder.py same "$RUNNER_TEMP/base/identity.json" "$RUNNER_TEMP/identity.json"
           python3 tools/ci/mod_builder.py unpack "$RUNNER_TEMP/base" --target target --cargo-home "$HOME/.cargo"

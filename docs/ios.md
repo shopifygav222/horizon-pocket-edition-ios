@@ -87,7 +87,41 @@ and checks its size and SHA-256, makes it a crate of the app's program
 (`tools/ios_native_sdk.py`), compiles the app with it and puts the mod's package beside the
 program, where the engine reads it. The build has no secret and may only read the repository.
 
-**What can go wrong.** "The build failed at: Build the game" means a mod did not compile after
+**The mod builder.** Compiling the whole game for every build took 25 to 45 minutes of a Mac,
+and GitHub lends this repository five Macs at a time: after a release, builds waited hours for
+one. The `mod-builder` workflow compiles a release's game once and keeps what Cargo made of it
+(the "compiled game": Cargo's target folder, the registry crates it read, the app bundle without
+mods) as the artifact `game-base-<commit>-<recipe>`, for 90 days. Every later build of that
+release takes it back and compiles the mods and the program that names them. It runs on a branch
+and is told the release: the release's own source and tools are checked out at its tag, so a
+release that is already out is built this way too.
+
+- *What counts as unchanged.* Cargo goes by the dates of the files it read, and a fresh checkout
+  dates every file now. The builder gives a file a fixed, old date only if its bytes are the ones
+  the kept game was compiled from (`tools/ci/mod_builder.py` `snapshot`, `restore`); anything else
+  keeps its own date and Cargo compiles again whatever read it, as in a build from nothing.
+- *Which kept game is taken.* Only one this repository's own run of `mod-builder.yml` made,
+  started by hand or by the service (never a pull request's), with the same compiler, Xcode and
+  build settings. Without one, or with any doubt, the game is compiled from nothing and kept.
+- *The one thing done differently.* `horizon-world`'s build script hashes `Cargo.lock` into the
+  key of the snapshots the game keeps on the phone. Mods add their own packages to that file. When
+  they change none of the game's own, the file is treated as the game's and that key stays the
+  release's own (a build from nothing gets another key, and the phone makes its snapshots again);
+  when a mod does change a package of the game's, Cargo is left to do everything a build from
+  nothing does (`mod_builder.py` `lock`).
+- *Its test.* `mod-builder-check` does it on Linux with the game's library: the same build from a
+  kept game compiles nothing, with a mod it compiles the mod only, and with one line of the game
+  changed it compiles the game again.
+- *Which releases it builds* is `packaging/ios/mod-builder.json` on main, which the service reads:
+  `{"ref": "main", "tags": ["v1.1.1", "v1.1.1-shared-worlds"]}`. Without the file, or for a
+  release it does not name, a build is `mod-build`'s, at the release's tag, as before. Removing
+  a tag (or the file) turns the builder off for it within minutes.
+- *A trial.* **Actions > mod-builder > Run workflow** with a release's tag and mods builds
+  `mod-trial-<key>`, which nothing hands to a player. Only the service asks for `serve`, which
+  names the file `mod-build-<key>`, as it finds a build.
+
+**What can go wrong.** "The build failed at: Build the game" (from the mod builder: "Build the
+game with the mods") means a mod did not compile after
 all (a new version of it since the list was made): turn it off and build again. "This device has
 started 6 builds today": tomorrow there are more. "This build of the app has no build service to
 ask": the app was built without one (a fork that did not set it up, below).

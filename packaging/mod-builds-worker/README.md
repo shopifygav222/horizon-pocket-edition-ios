@@ -78,6 +78,27 @@ npx wrangler deploy
 
 The second command asks for the token. The third prints the service's address.
 
+## The mod builder
+
+The service can start two workflows. `mod-build.yml`, at the release's tag, compiles the whole
+game for every build (25 to 45 minutes of a Mac). `mod-builder.yml`, on a branch, compiles a
+release's game once and after that only the mods (`docs/ios.md`, "The mod builder").
+
+Which one builds a release is the repository's own word: the file
+`packaging/ios/mod-builder.json` on its main branch.
+
+```json
+{ "ref": "main", "tags": ["v1.1.1", "v1.1.1-shared-worlds", "v1.1.1-shared-worlds-mods"] }
+```
+
+- `ref`: the branch `mod-builder.yml` is run on. `tags`: the releases it builds.
+- No file, a file that does not read, or a release it does not name: `mod-build.yml`, as before.
+- The service reads the file at most every two minutes. Take a tag out (or delete the file) and
+  the builder is off for it within minutes; builds already under way finish.
+- If GitHub will not start the builder, the service starts `mod-build.yml` for that build.
+- A build has the same key and the same file name whichever workflow made it, so a build one of
+  them finished is the other's too.
+
 ## For developers
 
 `node --test worker.test.mjs` runs the Worker against a pretend GitHub. Against the real one:

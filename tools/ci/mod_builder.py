@@ -22,6 +22,9 @@ compiled game compiles again exactly what a build from nothing would have compil
 
     lock BASE NEW            whether NEW (Cargo.lock with the mods) leaves every package of BASE
                              (without them) as it was; then NEW gets the fixed time (see `lock`)
+    take NAME DEST --workflow PATH --event EVENT...
+                             the newest kept game named NAME that this repository's own run of
+                             that workflow made, fetched into DEST (exit 1 when there is none)
     identity OUT             what a compiled game was built with: compiler, Xcode, paths, settings
     same A B                 whether two identities are one (exit 1 and the differences if not)
     pack OUT [--target DIR] [--cargo-home DIR] [--app DIR]   the compiled game as archives in OUT
@@ -261,6 +264,73 @@ def same(a: Path, b: Path) -> bool:
         if one.get(key) != other.get(key):
             print(f"mod_builder: {key} differs: {one.get(key)!r} / {other.get(key)!r}")
     return False
+
+
+def choose(artifacts: list[dict], name: str) -> list[dict]:
+    """The artifacts named `name` a build may look at, newest first: still kept, and from a run
+    whose code was this repository's own. A pull request from a fork runs the fork's workflows,
+    which may keep a file under any name; GitHub says where a run's code came from."""
+    def own(a: dict) -> bool:
+        run = a.get("workflow_run") or {}
+        return (isinstance(run.get("id"), int) and run.get("repository_id") is not None
+                and run.get("repository_id") == run.get("head_repository_id"))
+    mine = [a for a in artifacts if a.get("name") == name and not a.get("expired") and own(a)]
+    return sorted(mine, key=lambda a: a.get("created_at") or "", reverse=True)
+
+
+def made_by(run: dict, workflow: str, events: list[str]) -> bool:
+    """Whether `run` is a run of `workflow` (its file's path) started in one of `events`: a kept
+    game is taken only from the workflow that makes them, started by someone who may start it."""
+    path = run.get("path") or ""
+    return (path == workflow or path.startswith(workflow + "@")) and run.get("event") in events
+
+
+def gh(path: str) -> dict:
+    done = subprocess.run(["gh", "api", path], capture_output=True, timeout=300)
+    if done.returncode != 0:
+        raise RuntimeError(done.stderr.decode("utf-8", "replace").strip()[:300])
+    return json.loads(done.stdout)
+
+
+def take(name: str, dest: Path, workflow: str, events: list[str]) -> int:
+    """Fetches the kept game `name` into `dest`. Whatever goes wrong, there is none: the caller
+    compiles the game."""
+    repo = os.environ.get("GITHUB_REPOSITORY", "")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo) or not re.fullmatch(r"[A-Za-z0-9._-]+", name):
+        print("mod_builder: no repository or no name to look for")
+        return 1
+    try:
+        listed = gh(f"repos/{repo}/actions/artifacts?name={name}&per_page=30").get("artifacts", [])
+        for artifact in choose(listed, name)[:2]:
+            run = artifact["workflow_run"]["id"]
+            if not made_by(gh(f"repos/{repo}/actions/runs/{run}"), workflow, events):
+                print(f"mod_builder: {name} of run {run} was not made by {workflow}: left alone")
+                continue
+            if dest.exists():
+                shutil.rmtree(dest)
+            dest.mkdir(parents=True)
+            packed = dest.parent / f"{dest.name}.zip"
+            with open(packed, "wb") as file:
+                fetched = subprocess.run(["gh", "api", f"repos/{repo}/actions/artifacts/{artifact['id']}/zip"],
+                                         stdout=file, timeout=1800)
+            if fetched.returncode != 0:
+                print(f"mod_builder: {name} of run {run} could not be fetched")
+                packed.unlink(missing_ok=True)
+                continue
+            with zipfile.ZipFile(packed) as z:
+                for info in z.infolist():
+                    # Its own files, by plain names: nothing is written outside `dest`.
+                    if info.is_dir() or not re.fullmatch(r"[A-Za-z0-9._-]+", info.filename):
+                        raise RuntimeError(f"a file of the kept game is named {info.filename!r}")
+                z.extractall(dest)
+            packed.unlink()
+            print(f"mod_builder: {name} of run {run} is in {dest} ({artifact.get('size_in_bytes', 0) >> 20} MiB)")
+            return 0
+    except Exception as error:  # No kept game is an ordinary thing: the game is compiled.
+        print(f"mod_builder: looking for {name} failed: {error}")
+        return 1
+    print(f"mod_builder: no kept game {name}")
+    return 1
 
 
 PARTS = ("target", "cargo-home", "app")
@@ -520,6 +590,30 @@ def self_test() -> None:
         assert "4 bytes differ, in 1 places" in report and "key=aaaa" in report, report
         assert "CFBundleVersion: '7' against '8'" in report, report
 
+    # A kept game is this repository's own run's, the newest still kept.
+    def kept(ident, created, run, expired=False, name="game-base-abc-r1"):
+        return {"id": ident, "name": name, "expired": expired, "created_at": created, "workflow_run": run}
+    here = {"id": 7, "repository_id": 5, "head_repository_id": 5}
+    listed = [
+        kept(1, "2026-11-01T00:00:00Z", here),
+        kept(2, "2026-11-03T00:00:00Z", {"id": 8, "repository_id": 5, "head_repository_id": 99}),
+        kept(3, "2026-11-02T00:00:00Z", here),
+        kept(4, "2026-11-04T00:00:00Z", here, expired=True),
+        kept(5, "2026-11-05T00:00:00Z", here, name="game-base-abc-r10"),
+        kept(6, "2026-11-06T00:00:00Z", None),
+        kept(7, "2026-11-07T00:00:00Z", {"id": 9, "repository_id": 5}),
+    ]
+    assert [a["id"] for a in choose(listed, "game-base-abc-r1")] == [3, 1]
+    builder = ".github/workflows/mod-builder.yml"
+    assert made_by({"path": builder, "event": "workflow_dispatch"}, builder, ["workflow_dispatch"])
+    assert made_by({"path": builder + "@refs/heads/main", "event": "workflow_dispatch"}, builder, ["workflow_dispatch"])
+    for run in ({"path": builder, "event": "pull_request"},
+                {"path": builder, "event": "pull_request_target"},
+                {"path": ".github/workflows/other.yml", "event": "workflow_dispatch"},
+                {"path": builder + ".evil.yml", "event": "workflow_dispatch"},
+                {"event": "workflow_dispatch"}, {}):
+        assert not made_by(run, builder, ["workflow_dispatch"]), run
+
     registry = "registry+https://github.com/rust-lang/crates.io-index"
     def package(name, version, deps=(), source=registry, checksum="c"):
         text = f'[[package]]\nname = "{name}"\nversion = "{version}"\n'
@@ -612,6 +706,11 @@ def main() -> None:
                 print(f"  {label}: {name}")
     elif len(args) == 3 and args[0] == "lock":
         lock(Path(args[1]), Path(args[2]))
+    elif len(args) >= 7 and args[0] == "take" and args[3] == "--workflow":
+        rest = args[5:]
+        if len(rest) % 2 or any(flag != "--event" for flag in rest[::2]):
+            sys.exit(__doc__)
+        sys.exit(take(args[1], Path(args[2]).resolve(), args[4], rest[1::2]))
     elif len(args) == 2 and args[0] == "identity":
         Path(args[1]).write_text(json.dumps(identity(), indent=1, sort_keys=True) + "\n", encoding="utf-8")
     elif len(args) == 3 and args[0] == "same":
