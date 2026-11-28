@@ -479,15 +479,46 @@ def inner(x: bytes, y: bytes) -> list[str] | None:
     they hold, or None when one of them is no archive. Two archives of the same files are other
     bytes when they were packed at another minute."""
     try:
-        with zipfile.ZipFile(io.BytesIO(x)) as a, zipfile.ZipFile(io.BytesIO(y)) as b:
-            one = {i.filename: (i.CRC, i.file_size) for i in a.infolist() if not i.is_dir()}
-            two = {i.filename: (i.CRC, i.file_size) for i in b.infolist() if not i.is_dir()}
+        a, b = zipfile.ZipFile(io.BytesIO(x)), zipfile.ZipFile(io.BytesIO(y))
     except zipfile.BadZipFile:
         return None
-    found = [f"only in the first: {name}" for name in sorted(set(one) - set(two))]
-    found += [f"only in the second: {name}" for name in sorted(set(two) - set(one))]
-    found += [f"differs: {name}" for name in sorted(set(one) & set(two)) if one[name] != two[name]]
+    with a, b:
+        one = {i.filename: (i.CRC, i.file_size) for i in a.infolist() if not i.is_dir()}
+        two = {i.filename: (i.CRC, i.file_size) for i in b.infolist() if not i.is_dir()}
+        found = [f"only in the first: {name}" for name in sorted(set(one) - set(two))]
+        found += [f"only in the second: {name}" for name in sorted(set(two) - set(one))]
+        for name in sorted(set(one) & set(two)):
+            if one[name] != two[name]:
+                found.append(f"differs: {name} ({one[name][1]} bytes against {two[name][1]}): "
+                             + told(a.read(name), b.read(name)))
     return found
+
+
+def unordered(value):
+    """A JSON value with the order of its lists and objects taken out, to compare two that say
+    the same in another order."""
+    if isinstance(value, dict):
+        return sorted((key, unordered(item)) for key, item in value.items())
+    if isinstance(value, list):
+        return sorted(json.dumps(unordered(item), sort_keys=True) for item in value)
+    return value
+
+
+def told(x: bytes, y: bytes) -> str:
+    """How two files of an archive differ, in a line: the same data in another order, or where
+    they part."""
+    try:
+        p, q = json.loads(x), json.loads(y)
+    except ValueError:
+        at = next((i for i in range(min(len(x), len(y))) if x[i] != y[i]), min(len(x), len(y)))
+        return f"from byte {at}: `{shown(x[max(0, at - 20):at + 44])}` / `{shown(y[max(0, at - 20):at + 44])}`"
+    if p == q:
+        return "the same data, written differently"
+    if unordered(p) == unordered(q):
+        return "the same data in another order"
+    one, two = json.dumps(p, sort_keys=True), json.dumps(q, sort_keys=True)
+    at = next((i for i in range(min(len(one), len(two))) if one[i] != two[i]), min(len(one), len(two)))
+    return f"other data, from `{one[max(0, at - 60):at + 60]}` / `{two[max(0, at - 60):at + 60]}`"
 
 
 def compare(first: Path, second: Path) -> tuple[str, int]:
@@ -663,7 +694,11 @@ def self_test() -> None:
         assert "written in another order" in report and "packed at another time" in report, report
         packed(work / "e.ipa", plistlib.dumps(both, fmt=plistlib.FMT_XML, sort_keys=True), (2026, 1, 1, 0, 0, 0), b"other")
         report, real = compare(work / "c.ipa", work / "e.ipa")
-        assert real == 1 and "differs: tables/blocks.bin" in report, report
+        assert real == 1 and "differs: tables/blocks.bin (5 bytes against 5): from byte 0" in report, report
+        assert told(b'{"a": [1, 2], "b": 1}', b'{"b": 1, "a": [1, 2]}') == "the same data, written differently"
+        assert told(b'{"a": [{"x": 1}, {"y": 2}]}', b'{"a": [{"y": 2}, {"x": 1}]}') == "the same data in another order"
+        assert told(b'{"a": [1, 2]}', b'{"a": [1, 3]}').startswith("other data, from")
+        assert told(b"abc", b"abd").startswith("from byte 2")
 
     # A kept game is this repository's own run's, the newest still kept.
     def kept(ident, created, run, expired=False, name="game-base-abc-r1"):
