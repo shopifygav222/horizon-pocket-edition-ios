@@ -31,6 +31,20 @@ SIMCTL_CHILD_HORIZON_VOICE_SELFTEST=1 xcrun simctl launch "$device" "$bundle"
 sleep 120
 data=$(xcrun simctl get_app_container "$device" "$bundle" data)
 logs="$data/Documents/logs"
+# A slow machine gets more time: a Simulator's first start can take minutes there, and after two
+# the log had only its first lines, which read as a start that never drew (it passed when run
+# again). The start is read once its log says the title screen is being made, or it stopped,
+# or five more minutes have gone.
+settled() {
+  grep -q 'panicked at' "$logs/stderr.log" 2>/dev/null && return 0
+  grep -qF 'Horizon: loading the title artwork' "$logs/latest.log" 2>/dev/null     && grep -qF 'Horizon voice self-test: done' "$logs/latest.log" 2>/dev/null
+}
+waited=120
+until settled || [ $waited -ge 420 ]; do
+  sleep 15
+  waited=$((waited + 15))
+done
+echo "The start was read $waited seconds in."
 echo "::group::stderr.log"; cat "$logs/stderr.log" 2>/dev/null || true; echo "::endgroup::"
 echo "::group::latest.log"; cat "$logs/latest.log" 2>/dev/null || true; echo "::endgroup::"
 failed=0
