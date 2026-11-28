@@ -219,7 +219,10 @@ impl Game<'_> {
             &title,
         );
         let top = y + PAD + TITLE[1];
-        ui.clipped([x, top, card_w, view], |ui| {
+        // The notes are drawn whole, then cut to their room, as the options' lists are: what is
+        // scrolled past the title or under the button does not show.
+        let first = ui.batch.vertices.len();
+        {
             let mut ty = top - scroll;
             for line in &lines {
                 let height = line.height();
@@ -259,7 +262,12 @@ impl Game<'_> {
                 }
                 ty += height;
             }
-        });
+        }
+        // In the batch's own units (GUI pixels), which the card's are `density / scale` of.
+        let gui = ui.density / ui.batch.scale;
+        let (left, right) = (x * gui, (x + card_w) * gui);
+        ui.batch
+            .clip_since(first, left, top * gui, right, (top + view) * gui);
         let button = [
             x + card_w - PAD - BUTTON[0],
             y + card_h - PAD - BUTTON[1],
