@@ -33,8 +33,9 @@ env:
   CARGO_TERM_COLOR: never
   # No debug information: the test is what gets compiled, not the program.
   CARGO_PROFILE_DEV_DEBUG: "0"
-  # The game's library, as the iPhone's program depends on it.
-  GAME: -p horizon-client --lib --features horizon-client/horizon-extras
+  # The game's library, as the iPhone's program depends on it, and the mod API crate, which that
+  # program has too (a mod depends on it) and the desktop's library alone does not.
+  GAME: -p horizon-client -p horizon-mod-api --lib --features horizon-client/horizon-extras
 
 jobs:
   unit:
